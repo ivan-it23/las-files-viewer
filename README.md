@@ -6,7 +6,7 @@
 
 - пользовательское имя — **«Просмотрщик LAS»**;
 - исполняемый файл — `LasViewer.exe`;
-- версия — `0.2.0`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
+- версия — `0.3.0`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
   `__version__` движка обязан с ней совпадать (сверяет `scripts/Build-Installer.ps1`).
 
 План работ и список функций — [`docs/PLAN.md`](docs/PLAN.md), устройство —
@@ -64,7 +64,7 @@ dotnet run --project tests/AMK.LasViewer.Checks
 Тесты на реальных файлах скважины 3201 берут их из `LASVIEWER_SAMPLES_DIR`
 или из папки загрузок; данные заказчика в репозиторий не кладутся.
 
-Файлы можно открыть сразу при запуске: `LasViewer.exe путь\к\файлу.las …`.
+Файлы можно открыть сразу при запуске: `LasViewer.exe путь\к\файлу.las …` или`nпроект `LasViewer.exe путь\к\проекту.lvproj`.`n`n## Данные пользователя`n`n| Что | Где |`n| --- | --- |`n| Проект (файлы, шаблоны, маркеры, интервалы, раскладка) | `*.lvproj` там, куда сохранил пользователь |`n| Библиотека шаблонов планшета | `%LOCALAPPDATA%\AMK\LasViewer\templates\*.lvtpl` |`n| Журналы | `%LOCALAPPDATA%\AMK\LasViewer\logs` |`n`nLAS-файлы программа не изменяет.
 
 Журналы приложения и вывод движка — `%LOCALAPPDATA%\AMK\LasViewer\logs`
 (меню «Движок → Открыть папку журналов»).
