@@ -6,7 +6,7 @@
 
 - пользовательское имя — **«Просмотрщик LAS»**;
 - исполняемый файл — `LasViewer.exe`;
-- версия — `0.1.0`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
+- версия — `0.2.0`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
   `__version__` движка обязан с ней совпадать (сверяет `scripts/Build-Installer.ps1`).
 
 План работ и список функций — [`docs/PLAN.md`](docs/PLAN.md), устройство —
@@ -16,13 +16,16 @@
 
 ```text
 LasViewer.slnx
-├── LasViewer/                      WinUI 3: окна и сценарии
-├── src/AMK.LasViewer.Engine/       запуск движка и клиент JSON-RPC
+├── LasViewer/                      WinUI 3: окна, планшет, таблица, вкладки
+├── src/AMK.LasViewer.Core/         модель открытого LAS-файла
+├── src/AMK.LasViewer.Charting/     математика планшета (без WinUI)
+├── src/AMK.LasViewer.Engine/       запуск движка, JSON-RPC, методы las.*
 ├── engine/                         Python-движок (пакет lasviewer_engine)
 │   ├── lasviewer_engine/
 │   ├── tests/
 │   └── requirements.txt            пакеты для встроенного Python
 ├── tests/AMK.LasViewer.Engine.Smoke/  проверка связи C# ↔ движок
+├── tests/AMK.LasViewer.Checks/     проверки планшета и чтения LAS через движок
 ├── installer/setup.iss             установщик Inno Setup
 └── scripts/
     ├── Prepare-Python.ps1          встроенный Python → artifacts\python
@@ -48,11 +51,20 @@ dotnet build LasViewer.slnx -c Debug -p:Platform=x64
 python -m unittest discover -s engine/tests
 ```
 
-Проверка связи C# ↔ движок на настоящем процессе:
+Проверка связи C# ↔ движок на настоящем процессе и проверки планшета:
 
 ```bash
 dotnet run --project tests/AMK.LasViewer.Engine.Smoke
 ```
+
+```bash
+dotnet run --project tests/AMK.LasViewer.Checks
+```
+
+Тесты на реальных файлах скважины 3201 берут их из `LASVIEWER_SAMPLES_DIR`
+или из папки загрузок; данные заказчика в репозиторий не кладутся.
+
+Файлы можно открыть сразу при запуске: `LasViewer.exe путь\к\файлу.las …`.
 
 Журналы приложения и вывод движка — `%LOCALAPPDATA%\AMK\LasViewer\logs`
 (меню «Движок → Открыть папку журналов»).
