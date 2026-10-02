@@ -206,6 +206,42 @@ Check("шаблон новее программы отвергается с по
     }
 });
 
+Check("проект: запись, чтение и поиск файлов после переноса папки", () =>
+{
+    string root = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
+    string data = Path.Combine(root, "Скважина 3201", "данные");
+    Directory.CreateDirectory(data);
+    string lasPath = Path.Combine(data, "400.las");
+    File.WriteAllText(lasPath, "~V");
+    string projectPath = Path.Combine(root, "Скважина 3201", "проект.lvproj");
+
+    TabletTemplate template = new() { Name = "ИК" };
+    template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Logarithmic(1, 10000), Curves = [new CurveStyle { Mnemonic = "RO1_400_S" }] });
+    DocumentAnnotations annotations = new();
+    annotations.Markers.Add(new DepthMarker { Depth = 2032.2, Name = "Кровля" });
+    ProjectSnapshot snapshot = new() { SyncDepth = false, Panels = [0] };
+    snapshot.Documents.Add(new ProjectDocumentEntry { Path = lasPath, Template = template, Annotations = annotations, ViewTop = 2100, ViewPixelsPerUnit = 7.5 });
+
+    string json = ProjectSerializer.Write(snapshot, projectPath);
+    ProjectSnapshot read = ProjectSerializer.Read(json);
+    Equal(read.Documents[0].RelativePath, Path.Combine("данные", "400.las"));
+    Equal(read.Documents[0].Template.Name, "ИК");
+    Equal(read.Documents[0].Annotations.Markers[0].Name, "Кровля");
+    Equal(read.Documents[0].ViewTop, 2100.0);
+    Equal(read.SyncDepth, false);
+    Equal(string.Join(",", read.Panels), "0");
+
+    // Папку проекта вместе с данными перенесли: полный путь устарел,
+    // файл находится по относительному.
+    string moved = root + "-перенос";
+    Directory.Move(root, moved);
+    string movedProject = Path.Combine(moved, "Скважина 3201", "проект.lvproj");
+    Equal(ProjectSerializer.Resolve(read.Documents[0], movedProject), Path.Combine(moved, "Скважина 3201", "данные", "400.las"));
+    File.Delete(Path.Combine(moved, "Скважина 3201", "данные", "400.las"));
+    Equal(ProjectSerializer.Resolve(read.Documents[0], movedProject), null);
+    Directory.Delete(moved, recursive: true);
+});
+
 Check("разбивка по страницам и масштаб треков под ширину", () =>
 {
     IReadOnlyList<(double Top, double Bottom)> pages = TabletPageBuilder.SplitDepth(2000, 2250, 10, 1000);
@@ -290,6 +326,33 @@ await CheckAsync("скважина 3201: открытие через движо�
     string svg = SvgWriter.Write(page.Scene, page.Width, page.Height, "3201");
     System.Xml.Linq.XDocument.Parse(svg);
     True(svg.Contains("Проверить") && svg.Contains("RO1_400_S") && !svg.Contains("Маркер"), "в SVG не те подписи: маркер 2040 м вне страницы 2100–2200 м");
+
+    // По просьбе (LASVIEWER_DEMO_PROJECT) — проект с 400.las и 2000.las рядом
+    // для ручной и автоматической проверки окна.
+    if (Environment.GetEnvironmentVariable("LASVIEWER_DEMO_PROJECT") is { Length: > 0 } demoPath)
+    {
+        ProjectSnapshot demo = new() { SyncDepth = true, Panels = [0, 1] };
+        foreach (string name in new[] { "400.las", "2000.las" })
+        {
+            LasDocument part = await engine.OpenLasAsync(Path.Combine(samples, name), CancellationToken.None);
+            TabletTemplate partTemplate = DefaultTemplateBuilder.Build(part);
+            partTemplate.Tracks[^1].Fills.Add(new FillDefinition
+            {
+                Kind = FillKind.BetweenCurves,
+                Curve = partTemplate.Tracks[^1].Curves[0].Mnemonic,
+                OtherCurve = partTemplate.Tracks[^1].Curves[^1].Mnemonic,
+                Color = 0x553A7BD5,
+                OppositeColor = 0x55D62728
+            });
+            DocumentAnnotations notes = new();
+            notes.Intervals.Add(new DepthInterval { Top = 2150, Bottom = 2170, Name = "Проверить запись" });
+            notes.Markers.Add(new DepthMarker { Depth = 2032.2, Name = "Маркер" });
+            demo.Documents.Add(new ProjectDocumentEntry { Path = Path.Combine(samples, name), Template = partTemplate, Annotations = notes });
+        }
+
+        File.WriteAllText(demoPath, ProjectSerializer.Write(demo, demoPath));
+        Console.WriteLine($"    проект для проверки окна: {demoPath}");
+    }
 
     await engine.CloseLasAsync(document.FileId, CancellationToken.None);
     try

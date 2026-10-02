@@ -219,7 +219,7 @@ public static class TemplateSerializer
             : throw new FormatException($"Неверный цвет «{text}»: ожидается #RRGGBB или #AARRGGBB.");
     }
 
-    internal static JsonObject ParseObject(string json)
+    public static JsonObject ParseObject(string json)
     {
         try
         {
@@ -231,7 +231,7 @@ public static class TemplateSerializer
         }
     }
 
-    internal static void RequireFormat(JsonObject root, string format, int supportedVersion, string what)
+    public static void RequireFormat(JsonObject root, string format, int supportedVersion, string what)
     {
         if (String(root, "format", string.Empty) != format)
         {
@@ -279,21 +279,21 @@ public static class TemplateSerializer
         _ => throw new FormatException($"Неизвестный вид заливки «{name}».")
     };
 
-    internal static JsonObject Object(JsonObject json, string name) =>
+    public static JsonObject Object(JsonObject json, string name) =>
         json[name] as JsonObject ?? throw new FormatException($"Нет обязательного раздела «{name}».");
 
-    internal static IEnumerable<JsonObject> Array(JsonObject json, string name) =>
+    public static IEnumerable<JsonObject> Array(JsonObject json, string name) =>
         (json[name] as JsonArray)?.OfType<JsonObject>() ?? [];
 
-    internal static string String(JsonObject json, string name, string fallback) =>
+    public static string String(JsonObject json, string name, string fallback) =>
         json[name] is JsonValue value && value.TryGetValue(out string? text) ? text : fallback;
 
-    internal static string RequiredString(JsonObject json, string name) =>
+    public static string RequiredString(JsonObject json, string name) =>
         json[name] is JsonValue value && value.TryGetValue(out string? text) && text.Length > 0
             ? text
             : throw new FormatException($"Нет обязательного поля «{name}».");
 
-    internal static double Number(JsonObject json, string name, double fallback) =>
+    public static double Number(JsonObject json, string name, double fallback) =>
         json[name] is JsonValue value && value.TryGetValue(out double number) ? number : fallback;
 
     private static T Enum<T>(JsonObject json, string name, T fallback) where T : struct, System.Enum =>

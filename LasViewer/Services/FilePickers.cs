@@ -18,15 +18,27 @@ namespace AMK.LasViewer.App.Services;
 /// </remarks>
 internal static class FilePickers
 {
-    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(
-        FileOpenPicker picker,
-        Window owner,
-        DialogService dialogs)
+    public static async Task<IReadOnlyList<StorageFile>> PickMultipleFilesAsync(FileOpenPicker picker, Window owner, DialogService dialogs)
+    {
+        return await Guard(picker, owner, dialogs, async () => await picker.PickMultipleFilesAsync(), []);
+    }
+
+    public static async Task<StorageFile?> PickSingleFileAsync(FileOpenPicker picker, Window owner, DialogService dialogs)
+    {
+        return await Guard(picker, owner, dialogs, async () => await picker.PickSingleFileAsync(), null);
+    }
+
+    public static async Task<StorageFile?> PickSaveFileAsync(FileSavePicker picker, Window owner, DialogService dialogs)
+    {
+        return await Guard(picker, owner, dialogs, async () => await picker.PickSaveFileAsync(), null);
+    }
+
+    private static async Task<T> Guard<T>(object picker, Window owner, DialogService dialogs, Func<Task<T>> pick, T fallback)
     {
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(owner));
         try
         {
-            return await picker.PickMultipleFilesAsync();
+            return await pick();
         }
         catch (Exception exception) when (exception is COMException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -37,7 +49,7 @@ internal static class FilePickers
                   + "способом — с ярлыка на рабочем столе или из меню «Пуск»."
                 : $"Windows не открыл системный диалог выбора файлов.\n\n{exception.Message}";
             await dialogs.ShowMessageAsync("Диалог выбора недоступен", message);
-            return [];
+            return fallback;
         }
     }
 }

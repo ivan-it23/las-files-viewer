@@ -8,6 +8,8 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
@@ -27,17 +29,17 @@ public sealed partial class MainWindow : Window
     private readonly AutoUpdateService updateService = new();
     private readonly UpdateFlow updateFlow;
     private readonly CancellationTokenSource lifetime = new();
+    private readonly IReadOnlyList<string> startupPaths;
     private OpenedDocument? active;
     private bool engineStopped;
+    private bool closeConfirmed;
     private bool updatingScaleCombo;
     private bool opening;
-    private readonly IReadOnlyList<string> startupPaths;
 
     public MainWindow(IReadOnlyList<string> startupPaths)
     {
         this.startupPaths = startupPaths;
         InitializeComponent();
-        Title = $"{AppInfo.ProductName} {AppInfo.VersionText}";
         SetInitialSize(1400, 900);
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "LasViewer.ico");
@@ -53,11 +55,31 @@ public sealed partial class MainWindow : Window
         engine.LogLine += (_, line) => AppLog.Write(line);
         engine.StateChanged += (_, e) => DispatcherQueue.TryEnqueue(() => ShowEngineState(e));
         ShowEngineState(new EngineStateChangedEventArgs(EngineState.NotStarted, null));
+
         project = new Project(engine);
-        Tablet.Dialogs = dialogs;
+        project.StateChanged += (_, _) => UpdateTitle();
+
+        Panels.Dialogs = dialogs;
+        Panels.FocusChanged += (_, _) =>
+        {
+            active = Panels.FocusedDocument ?? active;
+            ShowActiveDocument();
+        };
+        Panels.FocusedViewChanged += (_, _) => UpdateScaleDisplay();
+        Panels.Edited += (_, _) =>
+        {
+            project.MarkDirty();
+            RebuildProjectTree();
+        };
+        Panels.LayoutChanged += (_, _) =>
+        {
+            SyncCheck.Visibility = Panels.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+            project.MarkDirty();
+        };
 
         AppWindow.Closing += AppWindow_Closing;
         RootGrid.Loaded += RootGrid_Loaded;
+        RebuildTemplateMenu();
         ShowActiveDocument();
     }
 
@@ -66,7 +88,16 @@ public sealed partial class MainWindow : Window
         RootGrid.Loaded -= RootGrid_Loaded;
         if (await engine.StartAsync(lifetime.Token) && startupPaths.Count > 0)
         {
-            await OpenPathsAsync(startupPaths);
+            string? projectFile = startupPaths.FirstOrDefault(path =>
+                string.Equals(Path.GetExtension(path), Charting.ProjectSerializer.Extension, StringComparison.OrdinalIgnoreCase));
+            if (projectFile is not null)
+            {
+                await OpenProjectAsync(projectFile);
+            }
+            else
+            {
+                await OpenPathsAsync(startupPaths);
+            }
         }
 
         try
@@ -80,9 +111,10 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Закрытие откладывается до штатной остановки движка: он получает
-    /// <c>system.shutdown</c> и успевает завершить начатое. Если движок завис,
-    /// <see cref="EngineHost"/> завершает его принудительно.
+    /// Закрытие: сначала вопрос о несохранённом проекте, затем штатная
+    /// остановка движка — он получает <c>system.shutdown</c> и успевает
+    /// завершить начатое. Если движок завис, <see cref="EngineHost"/>
+    /// завершает его принудительно.
     /// </summary>
     private async void AppWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
@@ -92,6 +124,16 @@ public sealed partial class MainWindow : Window
         }
 
         args.Cancel = true;
+        if (!closeConfirmed)
+        {
+            if (!await ConfirmDiscardChangesAsync())
+            {
+                return;
+            }
+
+            closeConfirmed = true;
+        }
+
         lifetime.Cancel();
         SetStatus("Остановка движка...");
         try
@@ -124,6 +166,12 @@ public sealed partial class MainWindow : Window
 
     private void RootGrid_DragOver(object sender, DragEventArgs e)
     {
+        // Перетаскивание кривых внутри окна обрабатывает планшет, не окно.
+        if (e.DataView.Properties.ContainsKey(Controls.LogTablet.DragPropertyKey))
+        {
+            return;
+        }
+
         if (e.DataView.Contains(StandardDataFormats.StorageItems))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
@@ -167,22 +215,39 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        string? projectFile = paths.FirstOrDefault(path =>
+            string.Equals(Path.GetExtension(path), Charting.ProjectSerializer.Extension, StringComparison.OrdinalIgnoreCase));
+        if (projectFile is not null)
+        {
+            if (await ConfirmDiscardChangesAsync())
+            {
+                await OpenProjectAsync(projectFile);
+            }
+
+            return;
+        }
+
         await OpenPathsAsync(paths);
+    }
+
+    private async Task<bool> EnsureEngineReadyAsync()
+    {
+        if (engine.State == EngineState.Ready)
+        {
+            return true;
+        }
+
+        await dialogs.ShowMessageAsync(
+            "Движок не готов",
+            "Файлы читает движок, а он сейчас не работает.\n\n"
+            + (engine.LastError ?? "Дождитесь запуска движка или перезапустите его в меню «Движок»."));
+        return false;
     }
 
     private async Task OpenPathsAsync(IReadOnlyList<string> paths)
     {
-        if (paths.Count == 0 || opening)
+        if (paths.Count == 0 || opening || !await EnsureEngineReadyAsync())
         {
-            return;
-        }
-
-        if (engine.State != EngineState.Ready)
-        {
-            await dialogs.ShowMessageAsync(
-                "Движок не готов",
-                "Файлы читает движок, а он сейчас не работает.\n\n"
-                + (engine.LastError ?? "Дождитесь запуска движка или перезапустите его в меню «Движок»."));
             return;
         }
 
@@ -231,41 +296,47 @@ public sealed partial class MainWindow : Window
             SetStatus(string.Empty);
         }
 
-        if (failures.Count > 0)
-        {
-            string message = string.Join(
-                Environment.NewLine + Environment.NewLine,
-                failures.Select(failure => $"{Path.GetFileName(failure.Path)}\n{failure.Message}"));
-            await dialogs.ShowMessageAsync(
-                failures.Count == 1 ? "Файл не открыт" : $"Не открыто файлов: {failures.Count}",
-                message);
-        }
+        await ReportFailuresAsync(failures);
     }
 
-    private async void CloseFileMenuItem_Click(object sender, RoutedEventArgs e)
+    private async Task ReportFailuresAsync(IReadOnlyList<OpenFailure> failures)
     {
-        if (active is null)
+        if (failures.Count == 0)
         {
             return;
         }
 
-        OpenedDocument closing = active;
+        string message = string.Join(
+            Environment.NewLine + Environment.NewLine,
+            failures.Select(failure => $"{Path.GetFileName(failure.Path)}\n{failure.Message}"));
+        await dialogs.ShowMessageAsync(failures.Count == 1 ? "Файл не открыт" : $"Не открыто файлов: {failures.Count}", message);
+    }
+
+    private async void CloseFileMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (active is not null)
+        {
+            await CloseDocumentAsync(active);
+        }
+    }
+
+    private async Task CloseDocumentAsync(OpenedDocument closing)
+    {
         int position = project.Documents.ToList().IndexOf(closing);
-        active = null;
+        Panels.Remove(closing);
         await project.CloseAsync(closing);
 
-        OpenedDocument? next = project.Documents.Count == 0
-            ? null
-            : project.Documents[Math.Min(position, project.Documents.Count - 1)];
-        if (next is not null)
+        if (active == closing)
         {
-            Activate(next);
-        }
-        else
-        {
-            ShowActiveDocument();
+            active = Panels.FocusedDocument
+                     ?? (project.Documents.Count == 0 ? null : project.Documents[Math.Clamp(position, 0, project.Documents.Count - 1)]);
+            if (active is not null && Panels.Count == 0)
+            {
+                Panels.ShowSingle(active);
+            }
         }
 
+        ShowActiveDocument();
         SetStatus($"Закрыт {closing.Document.Name}");
     }
 
@@ -275,29 +346,19 @@ public sealed partial class MainWindow : Window
 
     private void Activate(OpenedDocument document)
     {
-        SaveTabletView();
         active = document;
+        Panels.ShowSingle(document);
         ShowActiveDocument();
-    }
-
-    private void SaveTabletView()
-    {
-        if (active is not null && Tablet.HasData)
-        {
-            active.ViewTop = Tablet.Top;
-            active.ViewPixelsPerUnit = Tablet.PixelsPerUnit;
-        }
     }
 
     private void ShowActiveDocument()
     {
         RebuildProjectTree();
         CloseFileMenuItem.IsEnabled = active is not null;
+        UpdateTitle();
 
         if (active is null)
         {
-            Title = $"{AppInfo.ProductName} {AppInfo.VersionText}";
-            Tablet.Clear();
             DataTable.Clear();
             HeaderPanel.Clear();
             SummaryPanel.Clear();
@@ -305,13 +366,26 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        LasDocument document = active.Document;
-        Title = $"{document.Name} — {AppInfo.ProductName} {AppInfo.VersionText}";
-        Tablet.Show(active.TabletData, active.Template, active.Annotations, document.FileId, active.ViewTop, active.ViewPixelsPerUnit);
-        DataTable.Show(document);
-        HeaderPanel.Show(document);
-        SummaryPanel.Show(document);
+        if (shownDetails != active)
+        {
+            shownDetails = active;
+            DataTable.Show(active.Document);
+            HeaderPanel.Show(active.Document);
+            SummaryPanel.Show(active.Document);
+        }
+
         UpdateViewVisibility();
+        UpdateScaleDisplay();
+    }
+
+    private OpenedDocument? shownDetails;
+
+    private void UpdateTitle()
+    {
+        string dirty = project.IsDirty && project.Documents.Count > 0 ? "*" : string.Empty;
+        string file = active is null ? string.Empty : $" — {active.Document.Name}";
+        Title = $"{project.DisplayName}{dirty}{file} — {AppInfo.ProductName} {AppInfo.VersionText}";
+        ProjectTitle.Text = $"Проект: {project.DisplayName}{dirty}";
     }
 
     private void RebuildProjectTree()
@@ -322,13 +396,31 @@ public sealed partial class MainWindow : Window
         {
             TreeViewNode fileNode = new()
             {
-                Content = new ProjectItem(document, null),
+                Content = new ProjectItem(document, null, null),
                 IsExpanded = document == active
             };
 
             foreach (LasCurve curve in document.Document.DataCurves)
             {
-                fileNode.Children.Add(new TreeViewNode { Content = new ProjectItem(document, curve) });
+                fileNode.Children.Add(new TreeViewNode { Content = new ProjectItem(document, curve, null) });
+            }
+
+            Charting.DocumentAnnotations notes = document.Annotations;
+            if (!notes.IsEmpty)
+            {
+                TreeViewNode notesNode = new() { Content = new ProjectItem(document, null, "Пометки"), IsExpanded = true };
+                foreach (Charting.DepthMarker marker in notes.Markers.OrderBy(marker => marker.Depth))
+                {
+                    notesNode.Children.Add(new TreeViewNode { Content = new ProjectItem(document, null, null, marker.Depth, $"◆ {Label(marker.Name, marker.Depth)}") });
+                }
+
+                foreach (Charting.DepthInterval interval in notes.Intervals.OrderBy(interval => interval.Top))
+                {
+                    string text = $"▭ {(interval.Name.Length > 0 ? interval.Name : "Интервал")} {interval.Top.ToString("0.##", CultureInfo.CurrentCulture)}–{interval.Bottom.ToString("0.##", CultureInfo.CurrentCulture)}";
+                    notesNode.Children.Add(new TreeViewNode { Content = new ProjectItem(document, null, null, interval.Top, text) });
+                }
+
+                fileNode.Children.Add(notesNode);
             }
 
             ProjectTree.RootNodes.Add(fileNode);
@@ -340,6 +432,28 @@ public sealed partial class MainWindow : Window
 
         ProjectTree.SelectedNode = activeNode;
         ProjectEmptyText.Visibility = project.Documents.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        static string Label(string name, double depth) =>
+            (name.Length > 0 ? name + " " : string.Empty) + depth.ToString("0.##", CultureInfo.CurrentCulture);
+    }
+
+    private void ProjectTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
+    {
+        if (args.InvokedItem is not TreeViewNode { Content: ProjectItem item })
+        {
+            return;
+        }
+
+        if (item.Document != active || !Panels.Contains(item.Document))
+        {
+            Activate(item.Document);
+        }
+
+        // Пометка: перейти к её глубине на планшете.
+        if (item.Depth is { } depth)
+        {
+            Panels.FocusedTablet?.CenterOn(depth);
+        }
     }
 
     /// <summary>Кривую из дерева можно перетащить на трек планшета того же файла.</summary>
@@ -363,12 +477,41 @@ public sealed partial class MainWindow : Window
         args.Data.RequestedOperation = DataPackageOperation.Copy;
     }
 
-    private void ProjectTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
+    private void ProjectTree_RightTapped(object sender, RightTappedRoutedEventArgs e)
     {
-        if (args.InvokedItem is TreeViewNode { Content: ProjectItem item } && item.Document != active)
+        DependencyObject? source = e.OriginalSource as DependencyObject;
+        while (source is not null and not TreeViewItem)
         {
-            Activate(item.Document);
+            source = VisualTreeHelper.GetParent(source);
         }
+
+        if (source is not TreeViewItem container || ProjectTree.NodeFromContainer(container) is not { Content: ProjectItem item })
+        {
+            return;
+        }
+
+        OpenedDocument document = item.Document;
+        MenuFlyout menu = new();
+        MenuFlyoutItem show = new() { Text = "Показать на планшете" };
+        show.Click += (_, _) => Activate(document);
+        menu.Items.Add(show);
+
+        MenuFlyoutItem beside = new() { Text = "Показать рядом", IsEnabled = !Panels.Contains(document) };
+        beside.Click += (_, _) =>
+        {
+            Panels.Add(document);
+            active = document;
+            ShowActiveDocument();
+        };
+        menu.Items.Add(beside);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+        MenuFlyoutItem close = new() { Text = $"Закрыть {document.Document.Name}" };
+        close.Click += async (_, _) => await CloseDocumentAsync(document);
+        menu.Items.Add(close);
+
+        menu.ShowAt(container, new FlyoutShowOptions { Position = e.GetPosition(container) });
+        e.Handled = true;
     }
 
     // ------------------------------------------------------------------
@@ -385,7 +528,7 @@ public sealed partial class MainWindow : Window
         string view = ViewSelector.SelectedItem?.Tag as string ?? "tablet";
         bool hasDocument = active is not null;
 
-        Tablet.Visibility = Show(hasDocument && view == "tablet");
+        Panels.Visibility = Show(hasDocument && view == "tablet");
         DataTable.Visibility = Show(hasDocument && view == "data");
         HeaderPanel.Visibility = Show(hasDocument && view == "header");
         SummaryPanel.Visibility = Show(hasDocument && view == "summary");
@@ -395,13 +538,20 @@ public sealed partial class MainWindow : Window
         static Visibility Show(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void Tablet_ViewChanged(object? sender, EventArgs e)
+    private void UpdateScaleDisplay()
     {
-        double ratio = Tablet.Ratio;
+        Controls.LogTablet? tablet = Panels.FocusedTablet;
+        if (tablet is null || !tablet.HasData)
+        {
+            ScaleText.Text = string.Empty;
+            return;
+        }
+
+        double ratio = tablet.Ratio;
         ComboBoxItem? preset = ScaleCombo.Items
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => item.Tag is "fit"
-                ? Tablet.IsShowingAll
+                ? tablet.IsShowingAll
                 : double.TryParse(item.Tag as string, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
                   && Math.Abs(value - ratio) / value < 0.005);
 
@@ -414,29 +564,29 @@ public sealed partial class MainWindow : Window
         updatingScaleCombo = true;
         ScaleCombo.SelectedItem = preset;
         updatingScaleCombo = false;
-
-        if (active is not null)
-        {
-            active.ViewTop = Tablet.Top;
-            active.ViewPixelsPerUnit = Tablet.PixelsPerUnit;
-        }
     }
 
     private void ScaleCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (updatingScaleCombo || ScaleCombo.SelectedItem is not ComboBoxItem { Tag: string tag })
+        if (updatingScaleCombo || ScaleCombo.SelectedItem is not ComboBoxItem { Tag: string tag } || Panels.FocusedTablet is not { } tablet)
         {
             return;
         }
 
         if (tag == "fit")
         {
-            Tablet.FitAll();
+            tablet.FitAll();
         }
         else if (double.TryParse(tag, NumberStyles.Float, CultureInfo.InvariantCulture, out double ratio))
         {
-            Tablet.SetRatio(ratio);
+            tablet.SetRatio(ratio);
         }
+    }
+
+    private void SyncCheck_Click(object sender, RoutedEventArgs e)
+    {
+        Panels.SyncDepth = SyncCheck.IsChecked == true;
+        project.MarkDirty();
     }
 
     // ------------------------------------------------------------------
@@ -484,6 +634,7 @@ public sealed partial class MainWindow : Window
 
         lines.Add(string.Empty);
         lines.Add($"Журналы: {AppInfo.LogDirectory}");
+        lines.Add($"Шаблоны: {TemplateLibrary.Directory}");
         lines.Add($"Обновления: {AutoUpdateService.UpdateRoot}");
 
         await dialogs.ShowMessageAsync("О программе", string.Join(Environment.NewLine, lines));
@@ -559,11 +710,21 @@ public sealed partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
 
-    /// <summary>Узел дерева проекта: файл или его кривая.</summary>
-    private sealed record ProjectItem(OpenedDocument Document, LasCurve? Curve)
+    /// <summary>Узел дерева проекта: файл, кривая, группа пометок или пометка.</summary>
+    private sealed record ProjectItem(OpenedDocument Document, LasCurve? Curve, string? Group, double? Depth = null, string? Text = null)
     {
         public override string ToString()
         {
+            if (Text is not null)
+            {
+                return Text;
+            }
+
+            if (Group is not null)
+            {
+                return Group;
+            }
+
             if (Curve is not null)
             {
                 return Curve.DisplayName;

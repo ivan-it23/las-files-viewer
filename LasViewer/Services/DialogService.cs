@@ -48,6 +48,37 @@ internal sealed class DialogService(Func<XamlRoot?> xamlRoot)
         });
     }
 
+    /// <summary>Строка от пользователя; <c>null</c> — отмена.</summary>
+    public async Task<string?> PromptAsync(string title, string label, string initial, string confirmText)
+    {
+        TextBox box = new() { Text = initial, Header = label, MinWidth = 360 };
+        box.SelectAll();
+        ContentDialog dialog = new()
+        {
+            Title = title,
+            Content = box,
+            PrimaryButtonText = confirmText,
+            CloseButtonText = "Отмена",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        dialog.PrimaryButtonClick += (_, args) => args.Cancel = box.Text.Trim().Length == 0;
+        return await ShowAsync(dialog) == ContentDialogResult.Primary ? box.Text.Trim() : null;
+    }
+
+    /// <summary>Вопрос с тремя ответами: да, нет, отмена.</summary>
+    public Task<ContentDialogResult> AskAsync(string title, string message, string yes, string no)
+    {
+        return ShowAsync(new ContentDialog
+        {
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            PrimaryButtonText = yes,
+            SecondaryButtonText = no,
+            CloseButtonText = "Отмена",
+            DefaultButton = ContentDialogButton.Primary
+        });
+    }
+
     public async Task<bool> ConfirmAsync(string title, string message, string confirmText, string cancelText, bool confirmIsDefault)
     {
         ContentDialogResult result = await ShowAsync(new ContentDialog
