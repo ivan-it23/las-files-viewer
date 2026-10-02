@@ -1,0 +1,13 @@
+* text=auto
+
+# Скрипты Windows PowerShell и Inno Setup — с CRLF.
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+
+# Образцы данных хранятся байт в байт: кодировка и переводы строк в них —
+# предмет проверки, а не оформление.
+*.las -text
+engine/tests/fixtures/** -text
+
+*.ico binary
+*.png binary

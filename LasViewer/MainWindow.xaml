@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="AMK.LasViewer.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="RootGrid" Background="White">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <MenuBar Grid.Row="0">
+            <MenuBarItem Title="Файл">
+                <MenuFlyoutItem Text="Выход" Click="ExitMenuItem_Click" />
+            </MenuBarItem>
+            <MenuBarItem Title="Движок">
+                <MenuFlyoutItem Text="Перезапустить движок" Click="RestartEngineMenuItem_Click" />
+                <MenuFlyoutItem Text="Открыть папку журналов" Click="OpenLogsMenuItem_Click" />
+            </MenuBarItem>
+            <MenuBarItem Title="Справка">
+                <MenuFlyoutItem x:Name="CheckUpdatesMenuItem" Text="Проверить обновления" Click="CheckUpdatesMenuItem_Click" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="О программе" Click="AboutMenuItem_Click" />
+            </MenuBarItem>
+        </MenuBar>
+
+        <Grid Grid.Row="1" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" MinWidth="180" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="340" MinWidth="240" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Проект: скважины, файлы, кривые. -->
+            <Grid Grid.Column="0" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,1,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Border Background="{StaticResource PanelHeaderBackground}" Padding="12,8">
+                    <TextBlock Text="Проект" FontWeight="SemiBold" />
+                </Border>
+                <TextBlock
+                    Grid.Row="1"
+                    Margin="12"
+                    Foreground="{StaticResource PlaceholderForeground}"
+                    TextWrapping="Wrap"
+                    Text="Здесь будут скважины, файлы и кривые проекта." />
+            </Grid>
+
+            <!-- Планшет. -->
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Border Background="{StaticResource PanelHeaderBackground}" Padding="12,8">
+                    <TextBlock Text="Планшет" FontWeight="SemiBold" />
+                </Border>
+                <TextBlock
+                    Grid.Row="1"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Foreground="{StaticResource PlaceholderForeground}"
+                    Text="Откройте LAS-файл, чтобы построить планшет." />
+            </Grid>
+
+            <!-- Агент. -->
+            <Grid Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Border Background="{StaticResource PanelHeaderBackground}" Padding="12,8">
+                    <TextBlock Text="Агент" FontWeight="SemiBold" />
+                </Border>
+                <TextBlock
+                    Grid.Row="1"
+                    Margin="12"
+                    Foreground="{StaticResource PlaceholderForeground}"
+                    TextWrapping="Wrap"
+                    Text="Здесь будет чат с ИИ-агентом." />
+            </Grid>
+        </Grid>
+
+        <!-- Строка состояния. -->
+        <Grid Grid.Row="2" Background="{StaticResource PanelHeaderBackground}" Padding="10,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Ellipse x:Name="EngineIndicator" Width="10" Height="10" VerticalAlignment="Center" />
+            <TextBlock
+                x:Name="EngineStatusText"
+                Grid.Column="1"
+                Margin="8,0,0,0"
+                VerticalAlignment="Center" />
+            <HyperlinkButton
+                x:Name="EngineDetailsButton"
+                Grid.Column="2"
+                Margin="8,0,0,0"
+                Padding="4,0"
+                VerticalAlignment="Center"
+                Content="Подробнее"
+                Visibility="Collapsed"
+                Click="EngineDetailsButton_Click" />
+            <TextBlock
+                x:Name="StatusText"
+                Grid.Column="3"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Foreground="{StaticResource PlaceholderForeground}" />
+        </Grid>
+    </Grid>
+</Window>

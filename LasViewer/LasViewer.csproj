@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>AMK.LasViewer.App</RootNamespace>
+    <AssemblyName>LasViewer</AssemblyName>
+    <ApplicationIcon>Assets\LasViewer.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishProfile>win-x64.pubxml</PublishProfile>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Product>Просмотрщик LAS</Product>
+    <Title>Просмотрщик LAS</Title>
+    <AssemblyTitle>Просмотрщик LAS</AssemblyTitle>
+    <Description>Просмотр, обработка и анализ LAS-файлов геофизических исследований скважин.</Description>
+    <Company>ООО НПФ &quot;АМК ГОРИЗОНТ&quot;</Company>
+    <Authors>ООО НПФ &quot;АМК ГОРИЗОНТ&quot;</Authors>
+    <Copyright>Copyright © 2026 ООО НПФ &quot;АМК ГОРИЗОНТ&quot;</Copyright>
+    <!-- Единственный источник номера версии. Build-Installer.ps1 сверяет с ним
+         __version__ движка (engine/lasviewer_engine/__init__.py). -->
+    <Version>0.1.0</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <InformationalVersion>0.1.0</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <PublishReadyToRun>False</PublishReadyToRun>
+    <PublishTrimmed>False</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\LasViewer.ico" />
+    <Content Include="Assets\CompanyEmblem.png" />
+    <Content Update="Assets\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\src\AMK.LasViewer.Engine\AMK.LasViewer.Engine.csproj" />
+  </ItemGroup>
+</Project>

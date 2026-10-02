@@ -1,0 +1,32 @@
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.nupkg
+
+# Packaging output
+installer/Output/*
+!installer/Output/.gitkeep
+publish/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Local assistant state
+.agents/
+.codex/
