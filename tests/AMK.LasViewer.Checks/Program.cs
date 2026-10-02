@@ -120,6 +120,109 @@ Check("шаблон: УЭС на лог-шкале, по 4 кривые в тр�
     Equal(template.Tracks[2].Scale.Kind, ScaleKind.Logarithmic);
 });
 
+Check("перенос за шкалу: обороты и прижатие после второго", () =>
+{
+    TrackScale scale = TrackScale.Linear(0, 10);
+    Near(scale.ToWrappedFraction(5, out int band), 0.5);
+    Equal(band, 0);
+    Near(scale.ToWrappedFraction(10, out band), 1);
+    Equal(band, 0);
+    Near(scale.ToWrappedFraction(13, out band), 0.3);
+    Equal(band, 1);
+    Near(scale.ToWrappedFraction(-2, out band), 0.8);
+    Equal(band, -1);
+    Near(scale.ToWrappedFraction(95, out band), 1);
+    Equal(band, 2);
+    Near(TrackScale.Logarithmic(1, 100).ToWrappedFraction(1000, out band), 0.5);
+    Equal(band, 1);
+});
+
+Check("заливка между кривыми меняет цвет в точке пересечения", () =>
+{
+    double[] depths = [0, 1, 2, 3, 4];
+    double[] a = [1, 2, 3, 4, 5];
+    double[] b = [3, 3, 3, 3, 3];
+    List<FillPolygon> polygons = FillBuilder.Build(depths, a, value => value, row => b[row], new DepthViewport(0, 10, 40), 0xFF00FF00, 0xFFFF0000);
+    Equal(polygons.Count, 2);
+    Equal(polygons[0].Color, 0xFFFF0000u);
+    Equal(polygons[1].Color, 0xFF00FF00u);
+    // Оба многоугольника сходятся в точке пересечения: глубина 2 → y = 20, x = 3.
+    True(polygons[0].Points.Contains(new PlotPoint(3, 20)), "нет точки пересечения в первом многоугольнике");
+    True(polygons[1].Points.Contains(new PlotPoint(3, 20)), "нет точки пересечения во втором многоугольнике");
+});
+
+Check("заливка без цвета для одной стороны и разрыв на пропуске", () =>
+{
+    double[] depths = [0, 1, 2, 3, 4];
+    double[] a = [5, 5, double.NaN, 5, 5];
+    List<FillPolygon> polygons = FillBuilder.Build(depths, a, value => value, _ => 0, new DepthViewport(0, 10, 40), 0xFF00FF00, null);
+    Equal(polygons.Count, 2);
+    List<FillPolygon> negativeOnly = FillBuilder.Build(depths, [1, 1, 1, 1, 1], value => value, _ => 3, new DepthViewport(0, 10, 40), 0xFF00FF00, null);
+    Equal(negativeOnly.Count, 0);
+});
+
+Check("шаблон и пометки: JSON туда и обратно без потерь", () =>
+{
+    TabletTemplate template = new() { Name = "Проверка", DepthTrackWidth = 80 };
+    template.Tracks.Add(new TrackDefinition
+    {
+        Scale = TrackScale.Logarithmic(0.1, 1000),
+        WidthDip = 210,
+        Curves =
+        [
+            new CurveStyle { Mnemonic = "RO1", Color = 0xFF112233, Thickness = 2, Dash = LineDash.Dash, Wrap = WrapMode.Wrap },
+            new CurveStyle { Mnemonic = "RO4", Scale = TrackScale.Linear(0, 50) }
+        ],
+        Fills = [new FillDefinition { Kind = FillKind.BetweenCurves, Curve = "RO1", OtherCurve = "RO4", Color = 0x5500FF00, OppositeColor = 0x55FF0000 }]
+    });
+
+    TabletTemplate copy = TemplateSerializer.ReadTemplate(TemplateSerializer.WriteTemplate(template));
+    Equal(TemplateSerializer.WriteTemplate(copy), TemplateSerializer.WriteTemplate(template));
+    Equal(copy.Tracks[0].Curves[0].Wrap, WrapMode.Wrap);
+    Equal(copy.Tracks[0].Curves[1].Scale, TrackScale.Linear(0, 50));
+    Equal(copy.Tracks[0].Fills[0].OppositeColor, 0x55FF0000u);
+
+    DocumentAnnotations annotations = new();
+    annotations.Markers.Add(new DepthMarker { Depth = 2150.5, Name = "Кровля", Color = 0xFFAA0000 });
+    annotations.Intervals.Add(new DepthInterval { Top = 2150, Bottom = 2170, Name = "Брак записи" });
+    DocumentAnnotations restored = TemplateSerializer.AnnotationsFromJson(TemplateSerializer.AnnotationsToJson(annotations));
+    Equal(restored.Markers[0].Id, annotations.Markers[0].Id);
+    Equal(restored.Markers[0].Name, "Кровля");
+    Equal(restored.Intervals[0].Bottom, 2170.0);
+    Equal(restored.MarkerNear(2150.6, 0.2)?.Name, "Кровля");
+    Equal(restored.IntervalAt(2160)?.Name, "Брак записи");
+});
+
+Check("шаблон новее программы отвергается с понятным сообщением", () =>
+{
+    try
+    {
+        TemplateSerializer.ReadTemplate("{\"format\":\"lasviewer-template\",\"version\":99,\"template\":{}}");
+        True(false, "должна быть ошибка формата");
+    }
+    catch (FormatException error)
+    {
+        True(error.Message.Contains("более новой программой"), error.Message);
+    }
+});
+
+Check("разбивка по страницам и масштаб треков под ширину", () =>
+{
+    IReadOnlyList<(double Top, double Bottom)> pages = TabletPageBuilder.SplitDepth(2000, 2250, 10, 1000);
+    Equal(pages.Count, 3);
+    Equal(pages[0], (2000.0, 2100.0));
+    Equal(pages[2], (2200.0, 2250.0));
+
+    TabletTemplate template = new() { DepthTrackWidth = 70 };
+    template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Linear(0, 1), WidthDip = 100 });
+    template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Linear(0, 1), WidthDip = 300 });
+    double[] widths = TabletPageBuilder.ScaleTrackWidths(template, 470);
+    Near(widths[0], 100);
+    Near(widths[1], 300);
+    widths = TabletPageBuilder.ScaleTrackWidths(template, 270);
+    Near(widths[0], 50);
+});
+
 await CheckAsync("скважина 3201: открытие через движок и планшет по умолчанию", async () =>
 {
     string samples = Environment.GetEnvironmentVariable("LASVIEWER_SAMPLES_DIR")
@@ -158,6 +261,35 @@ await CheckAsync("скважина 3201: открытие через движо�
     TabletData data = TabletData.From(document);
     Equal(data.Top, 2006.04);
     Equal(data.Bottom, 3032.64);
+
+    // Сцена со всеми видами элементов на реальных данных: перенос, заливка
+    // между кривыми, маркер, интервал — и её SVG должен быть корректным XML.
+    TrackDefinition resistivity = template.Tracks[2];
+    resistivity.Curves[0].Wrap = WrapMode.Wrap;
+    resistivity.Fills.Add(new FillDefinition
+    {
+        Kind = FillKind.BetweenCurves,
+        Curve = "RO1_400_S",
+        OtherCurve = "RO4_400_S",
+        Color = 0x553A7BD5,
+        OppositeColor = 0x55D62728
+    });
+    DocumentAnnotations annotations = new();
+    annotations.Markers.Add(new DepthMarker { Depth = 2040, Name = "Маркер" });
+    annotations.Intervals.Add(new DepthInterval { Top = 2150, Bottom = 2170, Name = "Проверить" });
+
+    watch.Restart();
+    double[] widths = TabletSceneBuilder.FitTrackWidths(template, 1000, 130);
+    DepthViewport viewport = new(data.Top, DepthViewport.PixelsPerUnitForRatio(500, "M"), 800);
+    TabletScene scene = TabletSceneBuilder.BuildBody(data, template, widths, viewport, annotations);
+    Console.WriteLine($"    сцена 1:500 построена за {watch.ElapsedMilliseconds} мс: {scene.Layers.Sum(l => l.Items.Count)} элементов");
+    True(scene.Layers[3].Items.OfType<ScenePolygon>().Any(), "нет заливки между RO1 и RO4");
+
+    TabletPage page = TabletPageBuilder.Build(
+        data, template, annotations, ["Скважина 3201", "3201 ИК.las"], widths, 2100, 2200, viewport.PixelsPerUnit);
+    string svg = SvgWriter.Write(page.Scene, page.Width, page.Height, "3201");
+    System.Xml.Linq.XDocument.Parse(svg);
+    True(svg.Contains("Проверить") && svg.Contains("RO1_400_S") && !svg.Contains("Маркер"), "в SVG не те подписи: маркер 2040 м вне страницы 2100–2200 м");
 
     await engine.CloseLasAsync(document.FileId, CancellationToken.None);
     try

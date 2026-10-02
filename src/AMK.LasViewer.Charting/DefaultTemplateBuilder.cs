@@ -16,6 +16,8 @@ public static class DefaultTemplateBuilder
 {
     public const int MaxCurvesPerTrack = 4;
 
+    public const string AutomaticName = "Автоматический (по единицам)";
+
     private const string ResistivityGroup = "\u0001resistivity";
     private const int MaxSamplesForRange = 200_000;
 
@@ -35,7 +37,7 @@ public static class DefaultTemplateBuilder
             group.Curves.Add(curve);
         }
 
-        TabletTemplate template = new();
+        TabletTemplate template = new() { Name = AutomaticName };
         foreach ((string key, List<LasCurve> curves) in groups)
         {
             TrackScale scale = key == ResistivityGroup ? ResistivityScale(curves) : LinearScale(curves);
@@ -45,7 +47,7 @@ public static class DefaultTemplateBuilder
                 {
                     Scale = scale,
                     Curves = chunk
-                        .Select((curve, position) => new CurveStyle(curve.Mnemonic, CurvePalette.ForPosition(position)))
+                        .Select((curve, position) => new CurveStyle { Mnemonic = curve.Mnemonic, Color = CurvePalette.ForPosition(position) })
                         .ToList()
                 });
             }

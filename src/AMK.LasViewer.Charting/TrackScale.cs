@@ -52,6 +52,26 @@ public sealed record TrackScale(ScaleKind Kind, double Left, double Right)
         return (Math.Log10(value) - logLeft) / (Math.Log10(Right) - logLeft);
     }
 
+    /// <summary>
+    /// Доля ширины с переносом за шкалу: значение правее шкалы попадает на
+    /// следующий «оборот» (<paramref name="band"/> = 1, 2), левее — на
+    /// предыдущий (−1, −2). Сама шкала [0; 1] — оборот 0, обе границы включены.
+    /// Дальше <paramref name="maxBands"/> оборотов значение прижимается к краю.
+    /// </summary>
+    public double ToWrappedFraction(double value, out int band, int maxBands = 2)
+    {
+        double fraction = ToFraction(value);
+        band = 0;
+        if (double.IsNaN(fraction) || fraction is >= 0 and <= 1)
+        {
+            return fraction;
+        }
+
+        int raw = (int)Math.Floor(fraction);
+        band = Math.Clamp(raw, -maxBands, maxBands);
+        return raw == band ? fraction - band : (band > 0 ? 1 : 0);
+    }
+
     public IReadOnlyList<GridLine> GridLines(double widthDip)
     {
         return Kind == ScaleKind.Linear ? LinearGrid() : LogarithmicGrid(widthDip);
