@@ -66,6 +66,10 @@
                     x:Name="ProjectTree"
                     Grid.Row="1"
                     SelectionMode="Single"
+                    CanDragItems="True"
+                    CanReorderItems="False"
+                    AllowDrop="False"
+                    DragItemsStarting="ProjectTree_DragItemsStarting"
                     ItemInvoked="ProjectTree_ItemInvoked" />
                 <TextBlock
                     x:Name="ProjectEmptyText"

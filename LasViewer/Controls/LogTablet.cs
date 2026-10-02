@@ -1,8 +1,8 @@
 using System.Globalization;
+using AMK.LasViewer.App.Services;
 using AMK.LasViewer.Charting;
 using Microsoft.UI;
 using Microsoft.UI.Input;
-using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -20,10 +20,9 @@ namespace AMK.LasViewer.App.Controls;
 /// Каротажный планшет: трек глубины и треки кривых по шаблону.
 /// </summary>
 /// <remarks>
-/// Отрисовка — фигурами XAML. Кривые прорежены <see cref="CurveDecimator"/>
-/// до четырёх точек на строку пикселей, поэтому число фигур не зависит от
-/// длины записи. Вся математика (шкалы, метки, прореживание) — в
-/// AMK.LasViewer.Charting; здесь только раскладка и ввод.
+/// Тело рисуется из сцены <see cref="TabletSceneBuilder"/> — той же, что уходит
+/// в SVG и на печать. Здесь только раскладка, ввод, курсор и интерактивная
+/// шапка (редактирование — в LogTablet.Editing.cs).
 /// </remarks>
 public sealed partial class LogTablet : UserControl
 {
@@ -33,12 +32,8 @@ public sealed partial class LogTablet : UserControl
     /// <summary>Уже этого трек не сжимается: подписи шкалы перестают читаться — включается прокрутка.</summary>
     private const double MinimumTrackWidth = 130;
 
-    private static readonly SolidColorBrush TrackBorderBrush = new(Color.FromArgb(0xFF, 0xB8, 0xB8, 0xB8));
-    private static readonly SolidColorBrush MajorGridBrush = new(Color.FromArgb(0xFF, 0xC4, 0xC4, 0xC4));
-    private static readonly SolidColorBrush MinorGridBrush = new(Color.FromArgb(0xFF, 0xE8, 0xE8, 0xE8));
     private static readonly SolidColorBrush CursorBrush = new(Color.FromArgb(0xC0, 0x20, 0x20, 0x20));
-    private static readonly SolidColorBrush MutedTextBrush = new(Color.FromArgb(0xFF, 0x66, 0x66, 0x66));
-    private static readonly SolidColorBrush HeaderBackground = new(Color.FromArgb(0xFF, 0xFA, 0xFA, 0xFA));
+    private static readonly SolidColorBrush SelectionBrush = new(Color.FromArgb(0x40, 0x1F, 0x5F, 0xBF));
 
     private readonly StackPanel headerPanel = new() { Orientation = Orientation.Horizontal };
     private readonly StackPanel bodyPanel = new() { Orientation = Orientation.Horizontal, Background = new SolidColorBrush(Colors.White) };
@@ -50,10 +45,17 @@ public sealed partial class LogTablet : UserControl
     };
 
     private readonly ScrollViewer horizontalScroller;
-    private readonly List<TrackView> tracks = [];
-    private DepthTrackView? depthTrack;
+    private readonly List<Canvas> layerCanvases = [];
+    private readonly List<Line> cursorLines = [];
+    private readonly List<Rectangle> selectionBands = [];
+    private Border cursorLabel = new();
+    private TextBlock cursorText = new();
+
     private TabletData? data;
     private TabletTemplate? template;
+    private DocumentAnnotations? annotations;
+    private string documentKey = string.Empty;
+    private double[] trackWidths = [];
 
     private double top;
     private double pixelsPerUnit;
@@ -68,6 +70,9 @@ public sealed partial class LogTablet : UserControl
     private bool dragging;
     private double dragStartY;
     private double dragStartTop;
+    private bool selecting;
+    private double selectionStart;
+    private double selectionEnd;
 
     public LogTablet()
     {
@@ -105,26 +110,46 @@ public sealed partial class LogTablet : UserControl
         horizontalScroller.SizeChanged += (_, e) =>
         {
             availableWidth = e.NewSize.Width;
-            LayoutTrackWidths();
             ScheduleRedraw();
         };
         bodyPanel.PointerMoved += Body_PointerMoved;
         bodyPanel.PointerExited += Body_PointerExited;
         bodyPanel.PointerPressed += Body_PointerPressed;
         bodyPanel.PointerReleased += Body_PointerReleased;
-        bodyPanel.PointerCaptureLost += (_, _) => dragging = false;
+        bodyPanel.PointerCaptureLost += (_, _) =>
+        {
+            dragging = false;
+            selecting = false;
+            UpdateSelectionVisuals();
+        };
         bodyPanel.PointerWheelChanged += Body_PointerWheelChanged;
+        bodyPanel.RightTapped += Body_RightTapped;
         depthScrollBar.ValueChanged += DepthScrollBar_ValueChanged;
     }
 
-    /// <summary>Сменился видимый участок или масштаб.</summary>
+    /// <summary>Сменился видимый участок или масштаб — по действию пользователя.</summary>
     public event EventHandler? ViewChanged;
+
+    /// <summary>Курсор перемещён пользователем (null — ушёл с планшета).</summary>
+    public event EventHandler<double?>? CursorDepthChanged;
+
+    /// <summary>Изменён шаблон или пометки: проект нужно сохранить.</summary>
+    public event EventHandler? Edited;
+
+    /// <summary>Очередь диалогов окна; без неё редактирование недоступно.</summary>
+    internal DialogService? Dialogs { get; set; }
 
     public double Top => top;
 
     public double PixelsPerUnit => pixelsPerUnit;
 
+    public double BodyHeight => bodyHeight;
+
     public bool HasData => data is not null && data.Depths.Length > 0;
+
+    public string IndexUnit => data?.IndexUnit ?? string.Empty;
+
+    public IReadOnlyList<double> TrackWidths => trackWidths;
 
     /// <summary>Виден весь интервал записи — масштаб «Весь интервал».</summary>
     public bool IsShowingAll => data is not null && bodyHeight > 0 && pixelsPerUnit > 0
@@ -139,12 +164,20 @@ public sealed partial class LogTablet : UserControl
     /// Показывает данные. Без сохранённого вида — масштаб 1:500 от начала
     /// записи: привычный масштаб, на котором кривые читаются.
     /// </summary>
-    public void Show(TabletData tabletData, TabletTemplate tabletTemplate, double? savedTop, double? savedPixelsPerUnit)
+    public void Show(
+        TabletData tabletData,
+        TabletTemplate tabletTemplate,
+        DocumentAnnotations documentAnnotations,
+        string key,
+        double? savedTop,
+        double? savedPixelsPerUnit)
     {
         data = tabletData;
         template = tabletTemplate;
+        annotations = documentAnnotations;
+        documentKey = key;
         cursorDepth = null;
-        BuildTracks();
+        Rebuild();
 
         if (savedTop is { } restoredTop && savedPixelsPerUnit is { } restoredScale)
         {
@@ -168,11 +201,26 @@ public sealed partial class LogTablet : UserControl
     {
         data = null;
         template = null;
-        tracks.Clear();
-        depthTrack = null;
+        annotations = null;
         headerPanel.Children.Clear();
         bodyPanel.Children.Clear();
+        layerCanvases.Clear();
+        cursorLines.Clear();
+        selectionBands.Clear();
+        headerValueTexts.Clear();
         depthScrollBar.IsEnabled = false;
+    }
+
+    /// <summary>Перестроить шапку и тело после изменения шаблона или пометок.</summary>
+    public void Refresh()
+    {
+        if (data is null)
+        {
+            return;
+        }
+
+        Rebuild();
+        ScheduleRedraw();
     }
 
     /// <summary>Устанавливает масштаб 1:<paramref name="ratio"/>, сохраняя глубину в центре окна.</summary>
@@ -192,7 +240,7 @@ public sealed partial class LogTablet : UserControl
         double center = top + bodyHeight / pixelsPerUnit / 2;
         pixelsPerUnit = ClampScale(DepthViewport.PixelsPerUnitForRatio(ratio, data.IndexUnit));
         top = center - bodyHeight / pixelsPerUnit / 2;
-        CommitView();
+        CommitView(raise: true);
     }
 
     /// <summary>Весь интервал записи в высоту окна.</summary>
@@ -212,7 +260,39 @@ public sealed partial class LogTablet : UserControl
 
         pixelsPerUnit = FitScale();
         top = data.Top;
-        CommitView();
+        CommitView(raise: true);
+    }
+
+    /// <summary>Глубина <paramref name="depth"/> — в центр окна, масштаб не меняется.</summary>
+    public void CenterOn(double depth)
+    {
+        if (data is null || bodyHeight <= 0 || pixelsPerUnit <= 0)
+        {
+            return;
+        }
+
+        top = depth - bodyHeight / pixelsPerUnit / 2;
+        CommitView(raise: true);
+    }
+
+    /// <summary>Вид, заданный другим планшетом при синхронизации; событие не поднимается.</summary>
+    public void SetView(double newTop, double newPixelsPerUnit)
+    {
+        if (data is null || bodyHeight <= 0)
+        {
+            return;
+        }
+
+        pixelsPerUnit = ClampScale(newPixelsPerUnit);
+        top = newTop;
+        CommitView(raise: false);
+    }
+
+    /// <summary>Курсор другого планшета; событие не поднимается.</summary>
+    public void ShowExternalCursor(double? depth)
+    {
+        cursorDepth = depth;
+        UpdateCursorVisuals();
     }
 
     private void ApplyPendingView()
@@ -233,18 +313,25 @@ public sealed partial class LogTablet : UserControl
             requestedRatio = null;
             pixelsPerUnit = ClampScale(DepthViewport.PixelsPerUnitForRatio(ratio, data.IndexUnit));
         }
+        else if (pixelsPerUnit > 0)
+        {
+            pixelsPerUnit = ClampScale(pixelsPerUnit);
+        }
 
         top = ClampTop(top);
         UpdateScrollBar();
         ViewChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void CommitView()
+    private void CommitView(bool raise)
     {
         top = ClampTop(top);
         UpdateScrollBar();
         ScheduleRedraw();
-        ViewChanged?.Invoke(this, EventArgs.Empty);
+        if (raise)
+        {
+            ViewChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private double FitScale()
@@ -308,6 +395,9 @@ public sealed partial class LogTablet : UserControl
     // Ввод
     // ------------------------------------------------------------------
 
+    private static bool IsKeyDown(VirtualKey key) =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(key).HasFlag(CoreVirtualKeyStates.Down);
+
     private void Body_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
         if (data is null || bodyHeight <= 0)
@@ -317,9 +407,8 @@ public sealed partial class LogTablet : UserControl
 
         PointerPoint point = e.GetCurrentPoint(bodyPanel);
         double notches = point.Properties.MouseWheelDelta / 120.0;
-        bool zoom = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
 
-        if (zoom)
+        if (IsKeyDown(VirtualKey.Control))
         {
             // Масштаб меняется вокруг глубины под курсором: точка, на которую
             // смотрит пользователь, остаётся на месте.
@@ -332,7 +421,7 @@ public sealed partial class LogTablet : UserControl
             top -= notches * bodyHeight / pixelsPerUnit * 0.1;
         }
 
-        CommitView();
+        CommitView(raise: true);
         UpdateCursor(point.Position.Y);
         e.Handled = true;
     }
@@ -345,19 +434,54 @@ public sealed partial class LogTablet : UserControl
             return;
         }
 
-        dragging = bodyPanel.CapturePointer(e.Pointer);
-        dragStartY = point.Position.Y;
-        dragStartTop = top;
+        if (!bodyPanel.CapturePointer(e.Pointer))
+        {
+            return;
+        }
+
+        if (IsKeyDown(VirtualKey.Shift) && Dialogs is not null)
+        {
+            // Shift + перетаскивание выделяет интервал.
+            selecting = true;
+            selectionStart = selectionEnd = top + point.Position.Y / pixelsPerUnit;
+            UpdateSelectionVisuals();
+        }
+        else
+        {
+            dragging = true;
+            dragStartY = point.Position.Y;
+            dragStartTop = top;
+        }
+
         e.Handled = true;
     }
 
-    private void Body_PointerReleased(object sender, PointerRoutedEventArgs e)
+    private async void Body_PointerReleased(object sender, PointerRoutedEventArgs e)
     {
         if (dragging)
         {
             dragging = false;
             bodyPanel.ReleasePointerCapture(e.Pointer);
             e.Handled = true;
+            return;
+        }
+
+        if (!selecting)
+        {
+            return;
+        }
+
+        selecting = false;
+        bodyPanel.ReleasePointerCapture(e.Pointer);
+        e.Handled = true;
+        double from = Math.Min(selectionStart, selectionEnd);
+        double to = Math.Max(selectionStart, selectionEnd);
+        UpdateSelectionVisuals();
+
+        // Случайный щелчок с Shift — не интервал.
+        if ((to - from) * pixelsPerUnit >= 4)
+        {
+            await CreateIntervalAsync(from, to);
         }
     }
 
@@ -372,7 +496,12 @@ public sealed partial class LogTablet : UserControl
         if (dragging)
         {
             top = dragStartTop - (y - dragStartY) / pixelsPerUnit;
-            CommitView();
+            CommitView(raise: true);
+        }
+        else if (selecting)
+        {
+            selectionEnd = top + Math.Clamp(y, 0, bodyHeight) / pixelsPerUnit;
+            UpdateSelectionVisuals();
         }
 
         UpdateCursor(y);
@@ -380,70 +509,86 @@ public sealed partial class LogTablet : UserControl
 
     private void Body_PointerExited(object sender, PointerRoutedEventArgs e)
     {
-        if (dragging)
+        if (dragging || selecting)
         {
             return;
         }
 
         cursorDepth = null;
         UpdateCursorVisuals();
+        CursorDepthChanged?.Invoke(this, null);
     }
 
     private void UpdateCursor(double y)
     {
         cursorDepth = y >= 0 && y <= bodyHeight ? top + y / pixelsPerUnit : null;
         UpdateCursorVisuals();
+        CursorDepthChanged?.Invoke(this, cursorDepth);
     }
 
     // ------------------------------------------------------------------
     // Построение и отрисовка
     // ------------------------------------------------------------------
 
-    private void BuildTracks()
+    private void Rebuild()
     {
-        tracks.Clear();
-        headerPanel.Children.Clear();
+        BuildHeaders();
+
         bodyPanel.Children.Clear();
-
-        depthTrack = new DepthTrackView(template!.DepthTrackWidth, data!.IndexUnit);
-        headerPanel.Children.Add(depthTrack.Header);
-        bodyPanel.Children.Add(depthTrack.Canvas);
-
-        foreach (TrackDefinition definition in template.Tracks)
+        layerCanvases.Clear();
+        cursorLines.Clear();
+        selectionBands.Clear();
+        // Элементы курсора создаются заново вместе с холстами: элемент XAML,
+        // оставшийся дочерним у старого холста, нельзя добавить в новый, а
+        // FrameworkElement.Parent у вынутого из дерева холста не сообщается.
+        cursorText = new TextBlock { FontSize = 11, Foreground = new SolidColorBrush(Colors.White) };
+        cursorLabel = new Border
         {
-            TrackView track = new(definition, data);
-            tracks.Add(track);
-            headerPanel.Children.Add(track.Header);
-            bodyPanel.Children.Add(track.Canvas);
+            Background = new SolidColorBrush(Color.FromArgb(0xFF, 0x20, 0x20, 0x20)),
+            Padding = new Thickness(3, 1, 3, 1),
+            CornerRadius = new CornerRadius(2),
+            Child = cursorText,
+            Visibility = Visibility.Collapsed
+        };
+
+        int layers = template!.Tracks.Count + 1;
+        for (int index = 0; index < layers; index++)
+        {
+            Canvas canvas = new() { Background = new SolidColorBrush(Colors.White) };
+            canvas.SizeChanged += (_, e) => canvas.Clip = new RectangleGeometry { Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
+            if (index > 0)
+            {
+                AttachTrackDropTarget(canvas, index - 1);
+            }
+
+            layerCanvases.Add(canvas);
+            bodyPanel.Children.Add(canvas);
+            cursorLines.Add(new Line { Stroke = CursorBrush, StrokeThickness = 1, Visibility = Visibility.Collapsed });
+            selectionBands.Add(new Rectangle { Fill = SelectionBrush, Visibility = Visibility.Collapsed });
         }
 
-        LayoutTrackWidths();
+        ApplyWidths();
     }
 
-    /// <summary>
-    /// Треки делят доступную ширину пропорционально своим ширинам из шаблона.
-    /// Если места не хватает, чтобы ни один трек не стал уже
-    /// <see cref="MinimumTrackWidth"/>, треки получают ширины шаблона и
-    /// появляется горизонтальная прокрутка.
-    /// </summary>
-    private void LayoutTrackWidths()
+    private void ApplyWidths()
     {
-        if (template is null || tracks.Count == 0 || availableWidth <= 0)
+        if (template is null)
         {
             return;
         }
 
-        double totalWeight = template.Tracks.Sum(track => track.WidthDip);
-        double room = availableWidth - template.DepthTrackWidth - 1;
-        double factor = room / totalWeight;
-        if (template.Tracks.Any(track => track.WidthDip * factor < MinimumTrackWidth))
-        {
-            factor = 1;
-        }
+        trackWidths = availableWidth > 0
+            ? TabletSceneBuilder.FitTrackWidths(template, availableWidth, MinimumTrackWidth)
+            : template.Tracks.Select(track => track.WidthDip).ToArray();
 
-        foreach (TrackView track in tracks)
+        for (int index = 0; index < layerCanvases.Count; index++)
         {
-            track.SetWidth(Math.Floor(track.Definition.WidthDip * factor));
+            double width = index == 0 ? template.DepthTrackWidth : trackWidths[index - 1];
+            layerCanvases[index].Width = width;
+            if (index < headerBorders.Count)
+            {
+                headerBorders[index].Width = width;
+            }
         }
     }
 
@@ -458,381 +603,100 @@ public sealed partial class LogTablet : UserControl
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
         {
             redrawPending = false;
-            Redraw();
+            // Исключение в обратном вызове диспетчера не доходит до
+            // App.UnhandledException и закрывает процесс вместе с несохранённой
+            // работой. Сбой отрисовки пишется в журнал, окно остаётся.
+            try
+            {
+                Redraw();
+            }
+            catch (Exception exception)
+            {
+                AppLog.Write($"Сбой отрисовки планшета: {exception}");
+            }
         });
     }
 
     private void Redraw()
     {
-        if (data is null || depthTrack is null || bodyHeight <= 0 || pixelsPerUnit <= 0)
+        if (data is null || template is null || bodyHeight <= 0 || pixelsPerUnit <= 0 || layerCanvases.Count == 0)
         {
             return;
         }
 
+        ApplyWidths();
         DepthViewport viewport = new(top, pixelsPerUnit, bodyHeight);
-        IReadOnlyList<DepthTick> ticks = DepthTicks.Generate(viewport);
-        double majorStep = DepthTicks.MajorStep(viewport);
+        TabletScene scene = TabletSceneBuilder.BuildBody(data, template, trackWidths, viewport, annotations);
 
-        depthTrack.Draw(viewport, ticks, majorStep);
-        foreach (TrackView track in tracks)
+        for (int index = 0; index < layerCanvases.Count && index < scene.Layers.Count; index++)
         {
-            track.Draw(viewport, ticks);
+            Canvas canvas = layerCanvases[index];
+            canvas.Children.Clear();
+            SceneRenderer.Render(scene.Layers[index], canvas);
+            canvas.Children.Add(selectionBands[index]);
+            canvas.Children.Add(cursorLines[index]);
         }
 
+        layerCanvases[0].Children.Add(cursorLabel);
         UpdateCursorVisuals();
+        UpdateSelectionVisuals();
     }
 
     private void UpdateCursorVisuals()
     {
-        if (data is null || depthTrack is null)
+        if (data is null || layerCanvases.Count == 0)
         {
             return;
         }
 
-        double? y = cursorDepth is { } depth ? (depth - top) * pixelsPerUnit : null;
-        int row = cursorDepth is { } cursor ? data.NearestRow(cursor) : -1;
-
-        depthTrack.ShowCursor(y, cursorDepth, data.Depths.Length > 1 ? data.Depths[1] - data.Depths[0] : 0.1);
-        foreach (TrackView track in tracks)
+        double? y = cursorDepth is { } depth && pixelsPerUnit > 0 ? (depth - top) * pixelsPerUnit : null;
+        bool visible = y is { } position && position >= 0 && position <= bodyHeight;
+        for (int index = 0; index < cursorLines.Count; index++)
         {
-            track.ShowCursor(y, row);
+            Line line = cursorLines[index];
+            line.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible)
+            {
+                line.X1 = 0;
+                line.X2 = layerCanvases[index].Width;
+                line.Y1 = line.Y2 = y!.Value;
+            }
+        }
+
+        cursorLabel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        if (visible)
+        {
+            double step = data.Depths.Length > 1 ? Math.Abs(data.Depths[1] - data.Depths[0]) : 0.1;
+            int decimals = Math.Clamp((int)Math.Ceiling(-Math.Log10(step > 0 ? step : 0.1)) + 1, 1, 4);
+            cursorText.Text = cursorDepth!.Value.ToString("F" + decimals, CultureInfo.CurrentCulture);
+            Canvas.SetLeft(cursorLabel, 2);
+            Canvas.SetTop(cursorLabel, y!.Value - 9);
+        }
+
+        int row = visible ? data.NearestRow(cursorDepth!.Value) : -1;
+        UpdateHeaderValues(row);
+    }
+
+    private void UpdateSelectionVisuals()
+    {
+        bool visible = selecting && data is not null;
+        double from = (Math.Min(selectionStart, selectionEnd) - top) * pixelsPerUnit;
+        double to = (Math.Max(selectionStart, selectionEnd) - top) * pixelsPerUnit;
+        for (int index = 0; index < selectionBands.Count; index++)
+        {
+            Rectangle band = selectionBands[index];
+            band.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible)
+            {
+                band.Width = layerCanvases[index].Width;
+                band.Height = Math.Max(1, to - from);
+                Canvas.SetTop(band, from);
+            }
         }
     }
 
     internal static string FormatValue(double value)
     {
         return double.IsNaN(value) ? "—" : value.ToString("G5", CultureInfo.CurrentCulture);
-    }
-
-    // ------------------------------------------------------------------
-    // Трек глубины
-    // ------------------------------------------------------------------
-
-    private sealed class DepthTrackView
-    {
-        private readonly double width;
-        private readonly Line cursorLine = new() { Stroke = CursorBrush, StrokeThickness = 1 };
-        private readonly Border cursorLabel = new()
-        {
-            Background = new SolidColorBrush(Color.FromArgb(0xFF, 0x20, 0x20, 0x20)),
-            Padding = new Thickness(3, 1, 3, 1),
-            CornerRadius = new CornerRadius(2)
-        };
-        private readonly TextBlock cursorText = new() { FontSize = 11, Foreground = new SolidColorBrush(Colors.White) };
-
-        public DepthTrackView(double width, string unit)
-        {
-            this.width = width;
-            cursorLabel.Child = cursorText;
-
-            StackPanel title = new() { VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(4) };
-            title.Children.Add(new TextBlock
-            {
-                Text = "Глубина",
-                FontWeight = FontWeights.SemiBold,
-                FontSize = 12,
-                HorizontalAlignment = HorizontalAlignment.Center
-            });
-            title.Children.Add(new TextBlock
-            {
-                Text = unit.Length > 0 ? unit : "—",
-                FontSize = 11,
-                Foreground = MutedTextBrush,
-                HorizontalAlignment = HorizontalAlignment.Center
-            });
-
-            Header = new Border
-            {
-                Width = width,
-                Background = HeaderBackground,
-                BorderBrush = TrackBorderBrush,
-                BorderThickness = new Thickness(0, 0, 1, 1),
-                Child = title
-            };
-            Canvas = new Canvas { Width = width, Background = new SolidColorBrush(Colors.White) };
-            Canvas.SizeChanged += (_, e) => Canvas.Clip = new RectangleGeometry { Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
-        }
-
-        public Border Header { get; }
-
-        public Canvas Canvas { get; }
-
-        public void Draw(DepthViewport viewport, IReadOnlyList<DepthTick> ticks, double majorStep)
-        {
-            Canvas.Children.Clear();
-            int decimals = majorStep >= 1 ? 0 : (int)Math.Ceiling(-Math.Log10(majorStep));
-
-            GeometryGroup lines = new();
-            foreach (DepthTick tick in ticks)
-            {
-                double y = viewport.ToY(tick.Depth);
-                double length = tick.IsMajor ? 12 : 6;
-                lines.Children.Add(new LineGeometry { StartPoint = new Point(width - length, y), EndPoint = new Point(width, y) });
-
-                // Подпись у самого края обрезалась бы наполовину — она пропускается.
-                if (tick.IsMajor && y >= 7 && y <= viewport.HeightDip - 7)
-                {
-                    TextBlock label = new()
-                    {
-                        Text = tick.Depth.ToString("F" + decimals, CultureInfo.CurrentCulture),
-                        FontSize = 11,
-                        Width = width - 16,
-                        TextAlignment = TextAlignment.Right
-                    };
-                    Microsoft.UI.Xaml.Controls.Canvas.SetTop(label, y - 8);
-                    Canvas.Children.Add(label);
-                }
-            }
-
-            Canvas.Children.Insert(0, new Microsoft.UI.Xaml.Shapes.Path { Data = lines, Stroke = MutedTextBrush, StrokeThickness = 1 });
-            Canvas.Children.Add(new Line
-            {
-                X1 = width - 0.5,
-                X2 = width - 0.5,
-                Y1 = 0,
-                Y2 = viewport.HeightDip,
-                Stroke = TrackBorderBrush,
-                StrokeThickness = 1
-            });
-            Canvas.Children.Add(cursorLine);
-            Canvas.Children.Add(cursorLabel);
-        }
-
-        public void ShowCursor(double? y, double? depth, double step)
-        {
-            if (y is not { } position || depth is not { } value)
-            {
-                cursorLine.Visibility = Visibility.Collapsed;
-                cursorLabel.Visibility = Visibility.Collapsed;
-                return;
-            }
-
-            int decimals = Math.Clamp((int)Math.Ceiling(-Math.Log10(Math.Abs(step) > 0 ? Math.Abs(step) : 0.1)) + 1, 1, 4);
-            cursorLine.X1 = 0;
-            cursorLine.X2 = width;
-            cursorLine.Y1 = cursorLine.Y2 = position;
-            cursorText.Text = value.ToString("F" + decimals, CultureInfo.CurrentCulture);
-            Microsoft.UI.Xaml.Controls.Canvas.SetLeft(cursorLabel, 2);
-            Microsoft.UI.Xaml.Controls.Canvas.SetTop(cursorLabel, position - 9);
-            cursorLine.Visibility = Visibility.Visible;
-            cursorLabel.Visibility = Visibility.Visible;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Трек кривых
-    // ------------------------------------------------------------------
-
-    private sealed class TrackView
-    {
-        private readonly TrackDefinition definition;
-        private readonly TabletData data;
-        private double width;
-        private readonly List<(CurveStyle Style, double[]? Values, TextBlock ValueText, SolidColorBrush Brush)> curves = [];
-        private readonly Line cursorLine = new() { Stroke = CursorBrush, StrokeThickness = 1 };
-
-        public TrackView(TrackDefinition definition, TabletData data)
-        {
-            this.definition = definition;
-            this.data = data;
-            width = definition.WidthDip;
-
-            StackPanel rows = new() { VerticalAlignment = VerticalAlignment.Bottom, Padding = new Thickness(6, 4, 6, 4), Spacing = 2 };
-            foreach (CurveStyle style in definition.Curves)
-            {
-                SolidColorBrush brush = new(ToColor(style.Color));
-                TextBlock valueText = new() { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Right };
-                curves.Add((style, data.Values(style.Mnemonic), valueText, brush));
-                rows.Children.Add(CurveHeader(style, brush, valueText));
-            }
-
-            Header = new Border
-            {
-                Width = definition.WidthDip,
-                Background = HeaderBackground,
-                BorderBrush = TrackBorderBrush,
-                BorderThickness = new Thickness(0, 0, 1, 1),
-                Child = rows
-            };
-            Canvas = new Canvas { Width = definition.WidthDip, Background = new SolidColorBrush(Colors.White) };
-            Canvas.SizeChanged += (_, e) => Canvas.Clip = new RectangleGeometry { Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
-        }
-
-        public Border Header { get; }
-
-        public Canvas Canvas { get; }
-
-        public TrackDefinition Definition => definition;
-
-        public void SetWidth(double value)
-        {
-            width = value;
-            Header.Width = value;
-            Canvas.Width = value;
-        }
-
-        public void Draw(DepthViewport viewport, IReadOnlyList<DepthTick> ticks)
-        {
-            Canvas.Children.Clear();
-            TrackScale scale = definition.Scale;
-
-            GeometryGroup minor = new();
-            GeometryGroup major = new();
-            foreach (DepthTick tick in ticks)
-            {
-                double y = viewport.ToY(tick.Depth);
-                (tick.IsMajor ? major : minor).Children.Add(new LineGeometry { StartPoint = new Point(0, y), EndPoint = new Point(width, y) });
-            }
-
-            foreach (GridLine line in scale.GridLines(width))
-            {
-                double x = Math.Round(line.Fraction * width) + 0.5;
-                (line.IsMajor ? major : minor).Children.Add(new LineGeometry { StartPoint = new Point(x, 0), EndPoint = new Point(x, viewport.HeightDip) });
-            }
-
-            Canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Path { Data = minor, Stroke = MinorGridBrush, StrokeThickness = 1 });
-            Canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Path { Data = major, Stroke = MajorGridBrush, StrokeThickness = 1 });
-
-            // Значение за пределами шкалы прижимается к краю трека, а не
-            // исчезает: пользователь видит, что кривая ушла за шкалу.
-            double ToX(double value)
-            {
-                double fraction = scale.ToFraction(value);
-                return double.IsNaN(fraction) ? double.NaN : Math.Clamp(fraction, 0, 1) * width;
-            }
-
-            foreach ((CurveStyle style, double[]? values, _, SolidColorBrush brush) in curves)
-            {
-                if (values is null)
-                {
-                    continue;
-                }
-
-                foreach (PlotPoint[] segment in CurveDecimator.Build(data.Depths, values, viewport, ToX))
-                {
-                    PointCollection points = [];
-                    foreach (PlotPoint point in segment)
-                    {
-                        points.Add(new Point(point.X, point.Y));
-                    }
-
-                    Canvas.Children.Add(new Polyline
-                    {
-                        Points = points,
-                        Stroke = brush,
-                        StrokeThickness = style.Thickness,
-                        StrokeLineJoin = PenLineJoin.Round
-                    });
-                }
-            }
-
-            Canvas.Children.Add(new Line
-            {
-                X1 = width - 0.5,
-                X2 = width - 0.5,
-                Y1 = 0,
-                Y2 = viewport.HeightDip,
-                Stroke = TrackBorderBrush,
-                StrokeThickness = 1
-            });
-            Canvas.Children.Add(cursorLine);
-        }
-
-        public void ShowCursor(double? y, int row)
-        {
-            if (y is not { } position)
-            {
-                cursorLine.Visibility = Visibility.Collapsed;
-            }
-            else
-            {
-                cursorLine.X1 = 0;
-                cursorLine.X2 = width;
-                cursorLine.Y1 = cursorLine.Y2 = position;
-                cursorLine.Visibility = Visibility.Visible;
-            }
-
-            foreach ((_, double[]? values, TextBlock valueText, _) in curves)
-            {
-                valueText.Text = row >= 0 && values is not null ? FormatValue(values[row]) : string.Empty;
-            }
-        }
-
-        private UIElement CurveHeader(CurveStyle style, SolidColorBrush brush, TextBlock valueText)
-        {
-            Grid grid = new() { ColumnSpacing = 4 };
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            grid.Children.Add(new Rectangle { Width = 16, Height = 2.5, Fill = brush, VerticalAlignment = VerticalAlignment.Center });
-
-            TextBlock name = new()
-            {
-                Text = style.Mnemonic,
-                FontSize = 12,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = brush,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-            Grid.SetColumn(name, 1);
-            grid.Children.Add(name);
-
-            Grid.SetColumn(valueText, 2);
-            grid.Children.Add(valueText);
-
-            Grid scaleRow = new();
-            scaleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            scaleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            scaleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            scaleRow.Children.Add(ScaleText(FormatScale(definition.Scale.Left), HorizontalAlignment.Left, 0));
-            scaleRow.Children.Add(ScaleText(data.Values(style.Mnemonic) is null ? "нет в файле" : UnitText(style.Mnemonic), HorizontalAlignment.Center, 1));
-            scaleRow.Children.Add(ScaleText(FormatScale(definition.Scale.Right), HorizontalAlignment.Right, 2));
-            Grid.SetRow(scaleRow, 1);
-            Grid.SetColumnSpan(scaleRow, 3);
-            grid.Children.Add(scaleRow);
-
-            // Шкала рисуется линией цвета кривой — как подпись шкалы на бумажном планшете.
-            Border underline = new()
-            {
-                BorderBrush = brush,
-                BorderThickness = new Thickness(0, 0, 0, 1),
-                Child = grid,
-                Padding = new Thickness(0, 0, 0, 1)
-            };
-            return underline;
-        }
-
-        private string UnitText(string mnemonic)
-        {
-            string unit = data.Unit(mnemonic);
-            return definition.Scale.Kind == ScaleKind.Logarithmic
-                ? (unit.Length > 0 ? unit + ", лог." : "лог.")
-                : unit;
-        }
-
-        private static TextBlock ScaleText(string text, HorizontalAlignment alignment, int column)
-        {
-            TextBlock block = new()
-            {
-                Text = text,
-                FontSize = 10,
-                Foreground = MutedTextBrush,
-                HorizontalAlignment = alignment
-            };
-            Grid.SetColumn(block, column);
-            return block;
-        }
-
-        /// <summary>Граница шкалы без экспоненты: «10000», а не «1E+04».</summary>
-        private static string FormatScale(double value) => value.ToString("0.####", CultureInfo.CurrentCulture);
-
-        private static Color ToColor(uint argb) => Color.FromArgb(
-            (byte)(argb >> 24),
-            (byte)(argb >> 16),
-            (byte)(argb >> 8),
-            (byte)argb);
     }
 }

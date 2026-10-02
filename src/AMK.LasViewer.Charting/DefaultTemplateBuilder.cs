@@ -56,10 +56,37 @@ public static class DefaultTemplateBuilder
         return template;
     }
 
+    /// <summary>
+    /// Шкала для кривой, которую кладут в пустой трек: по тем же правилам, что и
+    /// планшет по умолчанию. Описания кривой здесь нет, поэтому УЭС узнаётся
+    /// только по единице.
+    /// </summary>
+    public static TrackScale SuggestScale(TabletData data, string mnemonic)
+    {
+        double[]? values = data.Values(mnemonic);
+        if (values is null)
+        {
+            return TrackScale.Linear(0, 100);
+        }
+
+        LasCurve curve = new()
+        {
+            Mnemonic = mnemonic,
+            OriginalMnemonic = mnemonic,
+            Unit = data.Unit(mnemonic),
+            ApiCode = string.Empty,
+            Description = string.Empty,
+            Statistics = new CurveStatistics(0, 0, null, null, null),
+            Values = values
+        };
+        return IsResistivityUnit(curve.Unit) ? ResistivityScale([curve]) : LinearScale([curve]);
+    }
+
+    public static bool IsResistivityUnit(string unit) => NormalizeUnit(unit) is "омм" or "ohmm" or "ом" or "ohm";
+
     public static bool IsResistivity(LasCurve curve)
     {
-        string unit = NormalizeUnit(curve.Unit);
-        if (unit is "омм" or "ohmm" or "ом" or "ohm")
+        if (IsResistivityUnit(curve.Unit))
         {
             return true;
         }

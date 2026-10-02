@@ -54,6 +54,7 @@ public sealed partial class MainWindow : Window
         engine.StateChanged += (_, e) => DispatcherQueue.TryEnqueue(() => ShowEngineState(e));
         ShowEngineState(new EngineStateChangedEventArgs(EngineState.NotStarted, null));
         project = new Project(engine);
+        Tablet.Dialogs = dialogs;
 
         AppWindow.Closing += AppWindow_Closing;
         RootGrid.Loaded += RootGrid_Loaded;
@@ -306,7 +307,7 @@ public sealed partial class MainWindow : Window
 
         LasDocument document = active.Document;
         Title = $"{document.Name} — {AppInfo.ProductName} {AppInfo.VersionText}";
-        Tablet.Show(active.TabletData, active.Template, active.ViewTop, active.ViewPixelsPerUnit);
+        Tablet.Show(active.TabletData, active.Template, active.Annotations, document.FileId, active.ViewTop, active.ViewPixelsPerUnit);
         DataTable.Show(document);
         HeaderPanel.Show(document);
         SummaryPanel.Show(document);
@@ -339,6 +340,27 @@ public sealed partial class MainWindow : Window
 
         ProjectTree.SelectedNode = activeNode;
         ProjectEmptyText.Visibility = project.Documents.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Кривую из дерева можно перетащить на трек планшета того же файла.</summary>
+    private void ProjectTree_DragItemsStarting(TreeView sender, TreeViewDragItemsStartingEventArgs args)
+    {
+        object? item = args.Items.FirstOrDefault();
+        ProjectItem? projectItem = item switch
+        {
+            TreeViewNode { Content: ProjectItem node } => node,
+            ProjectItem direct => direct,
+            _ => null
+        };
+
+        if (projectItem?.Curve is null)
+        {
+            args.Cancel = true;
+            return;
+        }
+
+        args.Data.Properties[Controls.LogTablet.DragPropertyKey] = $"curve|{projectItem.Document.Document.FileId}|{projectItem.Curve.Mnemonic}";
+        args.Data.RequestedOperation = DataPackageOperation.Copy;
     }
 
     private void ProjectTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)

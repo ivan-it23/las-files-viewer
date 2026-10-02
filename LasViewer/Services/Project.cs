@@ -11,7 +11,11 @@ internal sealed class OpenedDocument(LasDocument document)
 
     public TabletData TabletData { get; } = TabletData.From(document);
 
-    public TabletTemplate Template { get; } = DefaultTemplateBuilder.Build(document);
+    /// <summary>Шаблон планшета этого файла. У каждого файла своя копия: правка одного не меняет другие.</summary>
+    public TabletTemplate Template { get; set; } = DefaultTemplateBuilder.Build(document);
+
+    /// <summary>Маркеры и интервалы файла; хранятся в файле проекта.</summary>
+    public DocumentAnnotations Annotations { get; set; } = new();
 
     /// <summary>Участок и масштаб планшета, к которым пользователь вернётся при переключении файлов.</summary>
     public double? ViewTop { get; set; }

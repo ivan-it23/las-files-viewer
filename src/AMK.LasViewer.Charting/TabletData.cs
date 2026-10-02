@@ -17,13 +17,17 @@ public sealed class TabletData
     private readonly Dictionary<string, double[]> values;
     private readonly Dictionary<string, string> units;
 
-    private TabletData(string indexUnit, double[] depths, Dictionary<string, double[]> values, Dictionary<string, string> units)
+    private TabletData(string indexUnit, double[] depths, Dictionary<string, double[]> values, Dictionary<string, string> units, List<string> mnemonics)
     {
         IndexUnit = indexUnit;
         Depths = depths;
         this.values = values;
         this.units = units;
+        Mnemonics = mnemonics;
     }
+
+    /// <summary>Мнемоники кривых (без индекса) в порядке файла.</summary>
+    public IReadOnlyList<string> Mnemonics { get; }
 
     public string IndexUnit { get; }
 
@@ -58,14 +62,16 @@ public sealed class TabletData
         double[] depths = order.Select(row => index[row]).ToArray();
         Dictionary<string, double[]> columns = new(StringComparer.Ordinal);
         Dictionary<string, string> units = new(StringComparer.Ordinal);
+        List<string> mnemonics = [];
         foreach (LasCurve curve in document.DataCurves)
         {
+            mnemonics.Add(curve.Mnemonic);
             double[] source = curve.Values;
             columns[curve.Mnemonic] = order.Select(row => source[row]).ToArray();
             units[curve.Mnemonic] = curve.Unit;
         }
 
-        return new TabletData(document.Index.Unit, depths, columns, units);
+        return new TabletData(document.Index.Unit, depths, columns, units, mnemonics);
     }
 
     /// <summary>Номер строки, ближайшей по глубине, или −1 для пустых данных.</summary>
