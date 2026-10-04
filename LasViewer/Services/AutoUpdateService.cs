@@ -19,21 +19,23 @@ internal sealed record UpdateCheckResult(
 }
 
 /// <summary>
-/// Проверка, загрузка и запуск обновления. Устроена как в «Визуализации данных»,
-/// с одним отличием: канал обновлений — только HTTPS.
+/// Проверка, загрузка и запуск обновления. Устроена как в «Визуализации данных»
+/// и берёт обновления из той же папки на сайте.
 /// </summary>
 /// <remarks>
-/// Контрольная сумма SHA-256 приходит в том же файле, что и имя установщика.
-/// По HTTP она ничего не защищает: подменивший установщик подменит и сумму.
-/// Поэтому адрес с другой схемой отвергается ещё до запроса.
+/// Сайт ivanbohg.beget.tech отвечает только по HTTP. Контрольная сумма SHA-256
+/// приходит в том же файле, что и имя установщика, поэтому она защищает от
+/// недокачанного или повреждённого файла, но не от подмены в сети: подменивший
+/// установщик подменит и сумму.
 /// </remarks>
 internal sealed class AutoUpdateService : IDisposable
 {
     /// <summary>
-    /// Каталог обновлений на сайте. Туда выкладываются установщик и
+    /// Каталог обновлений на сайте (<c>public_html/FilesForProgramVisualisation</c>),
+    /// общий с другими приложениями компании. Туда выкладываются установщик и
     /// <see cref="DescriptorFileName"/>, которые создаёт <c>scripts\Build-Installer.ps1</c>.
     /// </summary>
-    public static readonly Uri UpdateRoot = new("https://amk-horizon.ru/downloads/las-viewer/", UriKind.Absolute);
+    public static readonly Uri UpdateRoot = new("http://ivanbohg.beget.tech/FilesForProgramVisualisation/", UriKind.Absolute);
 
     public const string DescriptorFileName = "las-viewer-version.txt";
 
@@ -54,11 +56,6 @@ internal sealed class AutoUpdateService : IDisposable
 
     public AutoUpdateService()
     {
-        if (UpdateRoot.Scheme != Uri.UriSchemeHttps)
-        {
-            throw new InvalidOperationException("Канал обновлений обязан работать по HTTPS.");
-        }
-
         httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("LasViewerUpdater", "1.0"));
         httpClient.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };

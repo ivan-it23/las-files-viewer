@@ -249,9 +249,12 @@ Charting не зависит от WinUI: всё, что можно провер�
 
 ## Обновления
 
-- канал — только HTTPS (`AutoUpdateService.UpdateRoot`); другая схема
-  отвергается при создании службы. Контрольная сумма приходит в том же файле,
-  что и имя установщика, и по HTTP ничего бы не защищала;
+- каталог — `http://ivanbohg.beget.tech/FilesForProgramVisualisation/`
+  (`AutoUpdateService.UpdateRoot`), общий с «Визуализацией данных» и другими
+  приложениями; на хостинге это `public_html/FilesForProgramVisualisation`.
+  Сайт отвечает только по HTTP, поэтому контрольная сумма, которая приходит в
+  том же файле, что и имя установщика, защищает от повреждённой загрузки, но
+  не от подмены в сети;
 - `las-viewer-version.txt`: версия, имя установщика, SHA-256 — все три строки
   обязательны;
 - `AppId` в `installer/setup.iss` и ключ удаления в `AutoUpdateService`

@@ -6,7 +6,7 @@
 
 - пользовательское имя — **«Просмотрщик LAS»**;
 - исполняемый файл — `LasViewer.exe`;
-- версия — `0.3.0`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
+- версия — `0.3.2`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
   `__version__` движка обязан с ней совпадать (сверяет `scripts/Build-Installer.ps1`).
 
 План работ и список функций — [`docs/PLAN.md`](docs/PLAN.md), устройство —
@@ -77,6 +77,7 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-Installer.ps1
 ```
 
 В `installer\Output` появятся `LasViewer-Setup-<версия>.exe` и
-`las-viewer-version.txt`. Оба файла выкладываются в
-`https://amk-horizon.ru/downloads/las-viewer/` — оттуда их берёт
-автообновление. Канал обновлений работает только по HTTPS.
+`las-viewer-version.txt`. Оба файла выкладываются на хостинге в
+`ivanbohg.beget.tech/public_html/FilesForProgramVisualisation` — рядом с
+обновлениями других приложений; автообновление берёт их по адресу
+`http://ivanbohg.beget.tech/FilesForProgramVisualisation/`.
