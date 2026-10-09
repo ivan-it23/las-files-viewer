@@ -72,6 +72,9 @@
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="Выход" Click="ExitMenuItem_Click" />
             </MenuBarItem>
+            <MenuBarItem Title="Планшет">
+                <MenuFlyoutItem Text="Совместный планшет…" Click="CombinedTabletMenuItem_Click" />
+            </MenuBarItem>
             <MenuBarItem x:Name="TemplateMenu" Title="Шаблон" />
             <MenuBarItem Title="Движок">
                 <MenuFlyoutItem Text="Перезапустить движок" Click="RestartEngineMenuItem_Click" />

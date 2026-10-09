@@ -24,11 +24,19 @@ public sealed partial class MainWindow
 {
     private TabletPrinter? printer;
 
-    private async Task<(OpenedDocument Document, LogTablet Tablet)?> RequireTabletAsync()
+    /// <summary>Планшет в фокусе — файл или совместный — и его файлы.</summary>
+    private sealed record TabletTarget(ITabletContent Content, LogTablet Tablet, TabletSources Sources)
     {
-        if (Panels.FocusedDocument is { } document && Panels.FocusedTablet is { HasData: true } tablet)
+        public string FileStem => Content is OpenedDocument document
+            ? Path.GetFileNameWithoutExtension(document.Document.Name)
+            : Content.Title;
+    }
+
+    private async Task<TabletTarget?> RequireTabletAsync()
+    {
+        if (Panels.FocusedContent is { } content && Panels.FocusedTablet is { HasData: true } tablet)
         {
-            return (document, tablet);
+            return new TabletTarget(content, tablet, project.SourcesFor(content));
         }
 
         await dialogs.ShowMessageAsync("Планшет", "Откройте LAS-файл: выводится планшет активного файла.");
@@ -49,10 +57,10 @@ public sealed partial class MainWindow
             return;
         }
 
-        (OpenedDocument document, LogTablet tablet) = target;
+        LogTablet tablet = target.Tablet;
         (double visibleTop, double visibleBottom) = VisibleRange(tablet);
         ExportOptions? options = await ExportDialog.ShowAsync(
-            dialogs, "Экспорт планшета в SVG", "Далее", document.TabletData, visibleTop, visibleBottom, tablet.Ratio, estimatePages: false);
+            dialogs, "Экспорт планшета в SVG", "Далее", target.Sources, visibleTop, visibleBottom, tablet.Ratio, estimatePages: false);
         if (options is null)
         {
             return;
@@ -61,7 +69,7 @@ public sealed partial class MainWindow
         FileSavePicker picker = new()
         {
             SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
-            SuggestedFileName = Path.GetFileNameWithoutExtension(document.Document.Name) + " планшет"
+            SuggestedFileName = target.FileStem + " планшет"
         };
         picker.FileTypeChoices.Add("Векторное изображение SVG", [".svg"]);
         StorageFile? file = await FilePickers.PickSaveFileAsync(picker, this, dialogs);
@@ -73,15 +81,15 @@ public sealed partial class MainWindow
         try
         {
             TabletPage page = TabletPageBuilder.Build(
-                document.TabletData,
-                document.Template,
-                document.Annotations,
-                TitleLines(document, options, $"Экспорт {DateTime.Now:dd.MM.yyyy HH:mm}"),
+                target.Sources,
+                target.Content.Template,
+                target.Content.Annotations,
+                TitleLines(target, options, $"Экспорт {DateTime.Now:dd.MM.yyyy HH:mm}"),
                 tablet.TrackWidths,
                 options.Top,
                 options.Bottom,
                 options.PixelsPerUnit);
-            string svg = SvgWriter.Write(page.Scene, page.Width, page.Height, document.Document.Name);
+            string svg = SvgWriter.Write(page.Scene, page.Width, page.Height, target.Content.Title);
             await File.WriteAllTextAsync(file.Path, svg, new System.Text.UTF8Encoding(false));
             SetStatus($"Планшет сохранён: {file.Path}");
         }
@@ -105,7 +113,7 @@ public sealed partial class MainWindow
         FileSavePicker picker = new()
         {
             SuggestedStartLocation = PickerLocationId.PicturesLibrary,
-            SuggestedFileName = Path.GetFileNameWithoutExtension(target.Document.Document.Name) + " снимок"
+            SuggestedFileName = target.FileStem + " снимок"
         };
         picker.FileTypeChoices.Add("Изображение PNG", [".png"]);
         StorageFile? file = await FilePickers.PickSaveFileAsync(picker, this, dialogs);
@@ -153,10 +161,9 @@ public sealed partial class MainWindow
             return;
         }
 
-        (OpenedDocument document, LogTablet tablet) = target;
-        (double visibleTop, double visibleBottom) = VisibleRange(tablet);
+        (double visibleTop, double visibleBottom) = VisibleRange(target.Tablet);
         ExportOptions? options = await ExportDialog.ShowAsync(
-            dialogs, "Печать планшета", "Далее", document.TabletData, visibleTop, visibleBottom, tablet.Ratio, estimatePages: true);
+            dialogs, "Печать планшета", "Далее", target.Sources, visibleTop, visibleBottom, target.Tablet.Ratio, estimatePages: true);
         if (options is null)
         {
             return;
@@ -165,7 +172,7 @@ public sealed partial class MainWindow
         printer ??= new TabletPrinter(this);
         try
         {
-            await printer.PrintAsync(document.Document.Name, description => BuildPrintPages(document, options, description));
+            await printer.PrintAsync(target.Content.Title, description => BuildPrintPages(target, options, description));
         }
         catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or InvalidOperationException)
         {
@@ -177,7 +184,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private IReadOnlyList<UIElement> BuildPrintPages(OpenedDocument document, ExportOptions options, PrintPageDescription description)
+    private IReadOnlyList<UIElement> BuildPrintPages(TabletTarget target, ExportOptions options, PrintPageDescription description)
     {
         Size pageSize = description.PageSize;
         Rect area = description.ImageableRect;
@@ -190,9 +197,10 @@ public sealed partial class MainWindow
 
         // Строка «Страница N из M» в заголовке есть на каждой странице, поэтому
         // высота заголовка известна до того, как известно число страниц.
-        IReadOnlyList<string> sample = TitleLines(document, options, "Страница 1 из 1");
-        double[] widths = TabletPageBuilder.ScaleTrackWidths(document.Template, area.Width);
-        double bodyHeight = TabletPageBuilder.BodyHeight(document.Template, sample, area.Height);
+        IReadOnlyList<string> sample = TitleLines(target, options, "Страница 1 из 1");
+        TabletTemplate template = target.Content.Template;
+        double[] widths = TabletPageBuilder.ScaleTrackWidths(template, area.Width);
+        double bodyHeight = TabletPageBuilder.BodyHeight(template, sample, area.Height, target.Sources);
         IReadOnlyList<(double Top, double Bottom)> ranges = TabletPageBuilder.SplitDepth(options.Top, options.Bottom, options.PixelsPerUnit, bodyHeight);
 
         List<UIElement> pages = [];
@@ -200,10 +208,10 @@ public sealed partial class MainWindow
         {
             string footer = $"Страница {index + 1} из {ranges.Count} · напечатано {DateTime.Now:dd.MM.yyyy HH:mm}";
             TabletPage page = TabletPageBuilder.Build(
-                document.TabletData,
-                document.Template,
-                document.Annotations,
-                TitleLines(document, options, footer),
+                target.Sources,
+                template,
+                target.Content.Annotations,
+                TitleLines(target, options, footer),
                 widths,
                 ranges[index].Top,
                 ranges[index].Bottom,
@@ -225,10 +233,17 @@ public sealed partial class MainWindow
         return pages;
     }
 
-    /// <summary>Заголовок страницы: скважина, файл, интервал и масштаб.</summary>
-    private static IReadOnlyList<string> TitleLines(OpenedDocument document, ExportOptions options, string footer)
+    /// <summary>
+    /// Заголовок страницы: скважина, файл (у совместного планшета — его
+    /// название и файлы), интервал и масштаб. Сведения о скважине — из
+    /// первого файла.
+    /// </summary>
+    private IReadOnlyList<string> TitleLines(TabletTarget target, ExportOptions options, string footer)
     {
         CultureInfo culture = CultureInfo.CurrentCulture;
+        OpenedDocument document = target.Content as OpenedDocument
+                                  ?? project.FindByFileId(target.Sources.Primary.Key)
+                                  ?? throw new InvalidOperationException("Файл планшета закрыт.");
         LasSection? well = document.Document.Section(LasSectionKind.Well);
         string Value(string mnemonic) =>
             well?.Items.FirstOrDefault(item => item.Mnemonic.Equals(mnemonic, StringComparison.OrdinalIgnoreCase))?.Value ?? string.Empty;
@@ -248,8 +263,11 @@ public sealed partial class MainWindow
         }
 
         string first = wellParts.Count > 0 ? string.Join(" · ", wellParts) : document.Document.Name;
-        string unit = document.TabletData.IndexUnit;
-        string second = $"{document.Document.Name} · {options.Top.ToString("0.##", culture)} – {options.Bottom.ToString("0.##", culture)} {unit}"
+        string unit = target.Sources.IndexUnit;
+        string what = target.Content is CombinedTablet combined
+            ? $"{combined.Name} ({string.Join(", ", combined.Sources.Select(source => source.Document.Document.Name))})"
+            : document.Document.Name;
+        string second = $"{what} · {options.Top.ToString("0.##", culture)} – {options.Bottom.ToString("0.##", culture)} {unit}"
                         + $" · масштаб 1:{Math.Round(options.Ratio).ToString("N0", culture)}";
         return [first, second, footer];
     }

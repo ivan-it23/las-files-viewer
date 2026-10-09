@@ -26,6 +26,13 @@ public sealed class CurveStyle
 {
     public required string Mnemonic { get; set; }
 
+    /// <summary>
+    /// Файл, из которого взята кривая (ключ источника — <see cref="TabletSource.Key"/>);
+    /// <c>null</c> — файл самого планшета. На совместном планшете источник
+    /// указан у каждой кривой.
+    /// </summary>
+    public string? Source { get; set; }
+
     public uint Color { get; set; } = CurvePalette.Colors[0];
 
     public double Thickness { get; set; } = 1.2;
@@ -70,6 +77,13 @@ public sealed class FillDefinition
     public required string Curve { get; set; }
 
     public string? OtherCurve { get; set; }
+
+    /// <summary>
+    /// Файл обеих кривых заливки (<see cref="CurveStyle.Source"/>). Заливка
+    /// между кривыми разных файлов не строится: для неё нужен пересчёт на
+    /// общую сетку глубин.
+    /// </summary>
+    public string? Source { get; set; }
 
     /// <summary>Граничное значение для <see cref="FillKind.ToValue"/> в шкале кривой.</summary>
     public double Value { get; set; }

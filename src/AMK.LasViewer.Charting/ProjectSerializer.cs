@@ -20,13 +20,45 @@ public sealed class ProjectDocumentEntry
     public double? ViewPixelsPerUnit { get; set; }
 }
 
+/// <summary>Файл совместного планшета: номер файла в проекте и сдвиг по глубине при показе.</summary>
+public sealed record ProjectCombinedSource(int Document, double DepthShift);
+
+/// <summary>
+/// Совместный планшет: кривые нескольких файлов на одной колонке глубины.
+/// У каждой кривой шаблона указан файл — номер в <see cref="ProjectSnapshot.Documents"/>.
+/// </summary>
+public sealed class ProjectCombinedEntry
+{
+    public required string Name { get; set; }
+
+    public List<ProjectCombinedSource> Sources { get; init; } = [];
+
+    public required TabletTemplate Template { get; set; }
+
+    public DocumentAnnotations Annotations { get; set; } = new();
+
+    public double? ViewTop { get; set; }
+
+    public double? ViewPixelsPerUnit { get; set; }
+}
+
+/// <summary>Планшет на экране: файл или совместный планшет — по номеру в своём списке.</summary>
+public readonly record struct ProjectPanel(bool Combined, int Index);
+
 /// <summary>Содержимое файла проекта.</summary>
+/// <remarks>
+/// Кривые других файлов в шаблонах ссылаются на файл его номером в
+/// <see cref="Documents"/> (строкой): идентификаторы движка при каждом
+/// открытии новые.
+/// </remarks>
 public sealed class ProjectSnapshot
 {
     public List<ProjectDocumentEntry> Documents { get; init; } = [];
 
-    /// <summary>Номера файлов (по <see cref="Documents"/>), показанных на планшете рядом, слева направо.</summary>
-    public List<int> Panels { get; init; } = [];
+    public List<ProjectCombinedEntry> Combined { get; init; } = [];
+
+    /// <summary>Планшеты рядом, слева направо.</summary>
+    public List<ProjectPanel> Panels { get; init; } = [];
 
     /// <summary>Общая глубина и курсор у планшетов рядом.</summary>
     public bool SyncDepth { get; set; } = true;
@@ -44,7 +76,8 @@ public sealed class ProjectSnapshot
 public static class ProjectSerializer
 {
     public const string Format = "lasviewer-project";
-    public const int Version = 1;
+    /// <summary>2 — совместные планшеты и кривые других файлов в шаблонах.</summary>
+    public const int Version = 2;
     public const string Extension = ".lvproj";
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
@@ -67,10 +100,32 @@ public static class ProjectSerializer
             });
         }
 
-        JsonArray panels = [];
-        foreach (int panel in project.Panels)
+        JsonArray combined = [];
+        foreach (ProjectCombinedEntry entry in project.Combined)
         {
-            panels.Add(panel);
+            JsonArray sources = [];
+            foreach (ProjectCombinedSource source in entry.Sources)
+            {
+                sources.Add(new JsonObject { ["document"] = source.Document, ["depth_shift"] = source.DepthShift });
+            }
+
+            combined.Add(new JsonObject
+            {
+                ["name"] = entry.Name,
+                ["sources"] = sources,
+                ["template"] = TemplateSerializer.TemplateToJson(entry.Template),
+                ["annotations"] = TemplateSerializer.AnnotationsToJson(entry.Annotations),
+                ["view"] = entry.ViewTop is { } top && entry.ViewPixelsPerUnit is { } scale
+                    ? new JsonObject { ["top"] = top, ["pixels_per_unit"] = scale }
+                    : null
+            });
+        }
+
+        // Файл — числом (как в версии 1), совместный планшет — {"combined": номер}.
+        JsonArray panels = [];
+        foreach (ProjectPanel panel in project.Panels)
+        {
+            panels.Add(panel.Combined ? new JsonObject { ["combined"] = panel.Index } : JsonValue.Create(panel.Index));
         }
 
         JsonObject root = new()
@@ -78,6 +133,7 @@ public static class ProjectSerializer
             ["format"] = Format,
             ["version"] = Version,
             ["documents"] = documents,
+            ["combined"] = combined,
             ["layout"] = new JsonObject { ["panels"] = panels, ["sync_depth"] = project.SyncDepth }
         };
         return root.ToJsonString(WriteOptions);
@@ -103,6 +159,29 @@ public static class ProjectSerializer
             });
         }
 
+        foreach (JsonObject entry in TemplateSerializer.Array(root, "combined"))
+        {
+            JsonObject? view = entry["view"] as JsonObject;
+            ProjectCombinedEntry tablet = new()
+            {
+                Name = TemplateSerializer.String(entry, "name", "Совместный планшет"),
+                Template = TemplateSerializer.TemplateFromJson(TemplateSerializer.Object(entry, "template")),
+                Annotations = TemplateSerializer.AnnotationsFromJson(entry["annotations"] as JsonObject),
+                ViewTop = view is null ? null : TemplateSerializer.Number(view, "top", double.NaN) is var top && !double.IsNaN(top) ? top : null,
+                ViewPixelsPerUnit = view is null ? null : TemplateSerializer.Number(view, "pixels_per_unit", double.NaN) is var scale && !double.IsNaN(scale) ? scale : null
+            };
+            foreach (JsonObject source in TemplateSerializer.Array(entry, "sources"))
+            {
+                int document = (int)TemplateSerializer.Number(source, "document", -1);
+                if (document >= 0 && document < project.Documents.Count)
+                {
+                    tablet.Sources.Add(new ProjectCombinedSource(document, TemplateSerializer.Number(source, "depth_shift", 0)));
+                }
+            }
+
+            project.Combined.Add(tablet);
+        }
+
         if (root["layout"] is JsonObject layout)
         {
             project.SyncDepth = layout["sync_depth"] is not JsonValue sync || !sync.TryGetValue(out bool value) || value;
@@ -110,7 +189,12 @@ public static class ProjectSerializer
             {
                 if (panel is JsonValue number && number.TryGetValue(out int index) && index >= 0 && index < project.Documents.Count)
                 {
-                    project.Panels.Add(index);
+                    project.Panels.Add(new ProjectPanel(false, index));
+                }
+                else if (panel is JsonObject reference && (int)TemplateSerializer.Number(reference, "combined", -1) is var combinedIndex
+                         && combinedIndex >= 0 && combinedIndex < project.Combined.Count)
+                {
+                    project.Panels.Add(new ProjectPanel(true, combinedIndex));
                 }
             }
         }

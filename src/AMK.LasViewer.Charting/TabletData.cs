@@ -75,14 +75,17 @@ public sealed class TabletData
     }
 
     /// <summary>Номер строки, ближайшей по глубине, или −1 для пустых данных.</summary>
-    public int NearestRow(double depth)
+    public int NearestRow(double depth) => NearestRow(Depths, depth);
+
+    /// <summary>Номер ближайшей глубины в возрастающем массиве или −1 для пустого.</summary>
+    public static int NearestRow(double[] depths, double depth)
     {
-        if (Depths.Length == 0)
+        if (depths.Length == 0)
         {
             return -1;
         }
 
-        int position = Array.BinarySearch(Depths, depth);
+        int position = Array.BinarySearch(depths, depth);
         if (position >= 0)
         {
             return position;
@@ -94,11 +97,11 @@ public sealed class TabletData
             return 0;
         }
 
-        if (next >= Depths.Length)
+        if (next >= depths.Length)
         {
-            return Depths.Length - 1;
+            return depths.Length - 1;
         }
 
-        return depth - Depths[next - 1] <= Depths[next] - depth ? next - 1 : next;
+        return depth - depths[next - 1] <= depths[next] - depth ? next - 1 : next;
     }
 }

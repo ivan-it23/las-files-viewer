@@ -29,8 +29,8 @@ public static class TabletPageBuilder
         titleLines.Count == 0 ? 0 : titleLines.Count * TitleLineHeight + TitlePadding * 2;
 
     /// <summary>Высота тела на странице: всё, что осталось под заголовком и шапкой.</summary>
-    public static double BodyHeight(TabletTemplate template, IReadOnlyList<string> titleLines, double pageHeight) =>
-        pageHeight - TitleHeight(titleLines) - TabletSceneBuilder.HeaderHeight(template);
+    public static double BodyHeight(TabletTemplate template, IReadOnlyList<string> titleLines, double pageHeight, TabletSources? data = null) =>
+        pageHeight - TitleHeight(titleLines) - TabletSceneBuilder.HeaderHeight(template, data);
 
     /// <summary>
     /// Участки глубины по страницам. Последний участок короче, если запись
@@ -62,7 +62,7 @@ public static class TabletPageBuilder
     }
 
     public static TabletPage Build(
-        TabletData data,
+        TabletSources data,
         TabletTemplate template,
         DocumentAnnotations? annotations,
         IReadOnlyList<string> titleLines,
@@ -75,7 +75,7 @@ public static class TabletPageBuilder
         culture ??= CultureInfo.CurrentCulture;
         double width = template.DepthTrackWidth + trackWidths.Sum();
         double titleHeight = TitleHeight(titleLines);
-        double headerHeight = TabletSceneBuilder.HeaderHeight(template);
+        double headerHeight = TabletSceneBuilder.HeaderHeight(template, data);
         double bodyHeight = (bottom - top) * pixelsPerUnit;
 
         TabletScene page = new();

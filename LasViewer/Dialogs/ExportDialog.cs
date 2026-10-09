@@ -23,7 +23,7 @@ internal static class ExportDialog
         DialogService dialogs,
         string title,
         string confirmText,
-        TabletData data,
+        TabletSources data,
         double visibleTop,
         double visibleBottom,
         double currentRatio,

@@ -20,13 +20,18 @@ public static class TemplateSerializer
 
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
+    /// <summary>
+    /// Файл шаблона для библиотеки. Кривые других файлов в него не попадают:
+    /// шаблон применяется к другим файлам, где ссылка на конкретный файл
+    /// бессмысленна.
+    /// </summary>
     public static string WriteTemplate(TabletTemplate template)
     {
         JsonObject root = new()
         {
             ["format"] = TemplateFormat,
             ["version"] = TemplateVersion,
-            ["template"] = TemplateToJson(template)
+            ["template"] = TemplateToJson(TemplateEditing.WithoutOtherFiles(template))
         };
         return root.ToJsonString(WriteOptions);
     }
@@ -35,7 +40,7 @@ public static class TemplateSerializer
     {
         JsonObject root = ParseObject(json);
         RequireFormat(root, TemplateFormat, TemplateVersion, "шаблон");
-        return TemplateFromJson(Object(root, "template"));
+        return TemplateEditing.WithoutOtherFiles(TemplateFromJson(Object(root, "template")));
     }
 
     public static JsonObject TemplateToJson(TabletTemplate template)
@@ -46,7 +51,7 @@ public static class TemplateSerializer
             JsonArray curves = [];
             foreach (CurveStyle curve in track.Curves)
             {
-                curves.Add(new JsonObject
+                JsonObject curveJson = new()
                 {
                     ["mnemonic"] = curve.Mnemonic,
                     ["color"] = ColorToString(curve.Color),
@@ -54,13 +59,21 @@ public static class TemplateSerializer
                     ["dash"] = curve.Dash.ToString().ToLowerInvariant(),
                     ["scale"] = curve.Scale is null ? null : ScaleToJson(curve.Scale),
                     ["wrap"] = curve.Wrap.ToString().ToLowerInvariant()
-                });
+                };
+                // Ссылка на файл — только у кривых другого файла: в проекте это
+                // номер файла в проекте (см. ProjectSerializer).
+                if (curve.Source is { } source)
+                {
+                    curveJson["source"] = source;
+                }
+
+                curves.Add(curveJson);
             }
 
             JsonArray fills = [];
             foreach (FillDefinition fill in track.Fills)
             {
-                fills.Add(new JsonObject
+                JsonObject fillJson = new()
                 {
                     ["kind"] = FillKindName(fill.Kind),
                     ["curve"] = fill.Curve,
@@ -68,7 +81,13 @@ public static class TemplateSerializer
                     ["value"] = fill.Value,
                     ["color"] = ColorToString(fill.Color),
                     ["opposite_color"] = fill.OppositeColor is { } opposite ? ColorToString(opposite) : null
-                });
+                };
+                if (fill.Source is { } source)
+                {
+                    fillJson["source"] = source;
+                }
+
+                fills.Add(fillJson);
             }
 
             tracks.Add(new JsonObject
@@ -109,6 +128,7 @@ public static class TemplateSerializer
                 definition.Curves.Add(new CurveStyle
                 {
                     Mnemonic = RequiredString(curve, "mnemonic"),
+                    Source = OptionalString(curve, "source"),
                     Color = ColorFromString(String(curve, "color", "#FF1F5FBF")),
                     Thickness = Number(curve, "thickness", 1.2),
                     Dash = Enum<LineDash>(curve, "dash", LineDash.Solid),
@@ -124,6 +144,7 @@ public static class TemplateSerializer
                     Kind = FillKindFromName(RequiredString(fill, "kind")),
                     Curve = RequiredString(fill, "curve"),
                     OtherCurve = fill["other_curve"]?.GetValue<string>(),
+                    Source = OptionalString(fill, "source"),
                     Value = Number(fill, "value", 0),
                     Color = ColorFromString(String(fill, "color", "#553A7BD5")),
                     OppositeColor = fill["opposite_color"] is JsonValue opposite ? ColorFromString(opposite.GetValue<string>()) : null
@@ -287,6 +308,9 @@ public static class TemplateSerializer
 
     public static string String(JsonObject json, string name, string fallback) =>
         json[name] is JsonValue value && value.TryGetValue(out string? text) ? text : fallback;
+
+    public static string? OptionalString(JsonObject json, string name) =>
+        json[name] is JsonValue value && value.TryGetValue(out string? text) && text.Length > 0 ? text : null;
 
     public static string RequiredString(JsonObject json, string name) =>
         json[name] is JsonValue value && value.TryGetValue(out string? text) && text.Length > 0

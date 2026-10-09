@@ -118,7 +118,8 @@ internal static class TabletDialogs
 
     private static readonly string[] FillKinds = ["От левого края до кривой", "От кривой до правого края", "Между кривой и значением", "Между двумя кривыми"];
 
-    public static async Task<FillDefinition?> EditFillAsync(DialogService dialogs, TrackDefinition track, FillDefinition? existing)
+    /// <param name="title">Подпись кривой в списке: мнемоника и, для кривой другого файла, имя файла.</param>
+    public static async Task<FillDefinition?> EditFillAsync(DialogService dialogs, TrackDefinition track, FillDefinition? existing, Func<CurveStyle, string> title)
     {
         if (track.Curves.Count == 0)
         {
@@ -126,20 +127,28 @@ internal static class TabletDialogs
             return null;
         }
 
-        string[] mnemonics = track.Curves.Select(curve => curve.Mnemonic).ToArray();
+        CurveStyle[] curves = [.. track.Curves];
+        string[] titles = curves.Select(title).ToArray();
+        int Find(string? mnemonic, string? source) =>
+            Math.Max(0, Array.FindIndex(curves, item => item.Mnemonic == mnemonic && item.Source == source));
+
+        // Вторая кривая по умолчанию — последняя из того же файла, что и первая.
+        int defaultOther = Array.FindLastIndex(curves, item => item.Source == curves[0].Source);
+        bool canPair = defaultOther > 0;
         FillDefinition source = existing ?? new FillDefinition
         {
-            Kind = mnemonics.Length > 1 ? FillKind.BetweenCurves : FillKind.ToLeftEdge,
-            Curve = mnemonics[0],
-            OtherCurve = mnemonics.Length > 1 ? mnemonics[^1] : null,
-            Color = SceneColors.WithAlpha(track.Curves[0].Color, 0x55),
-            OppositeColor = mnemonics.Length > 1 ? SceneColors.WithAlpha(track.Curves[^1].Color, 0x55) : null
+            Kind = canPair ? FillKind.BetweenCurves : FillKind.ToLeftEdge,
+            Curve = curves[0].Mnemonic,
+            OtherCurve = canPair ? curves[defaultOther].Mnemonic : null,
+            Source = curves[0].Source,
+            Color = SceneColors.WithAlpha(curves[0].Color, 0x55),
+            OppositeColor = canPair ? SceneColors.WithAlpha(curves[defaultOther].Color, 0x55) : null
         };
 
         Form form = new();
         ComboBox kind = form.Add("Вид", Form.Choice(FillKinds, (int)source.Kind));
-        ComboBox curve = form.Add("Кривая", Form.Choice(mnemonics, Math.Max(0, Array.IndexOf(mnemonics, source.Curve))));
-        ComboBox other = form.Add("Вторая кривая", Form.Choice(mnemonics, Math.Max(0, Array.IndexOf(mnemonics, source.OtherCurve ?? mnemonics[^1]))));
+        ComboBox curve = form.Add("Кривая", Form.Choice(titles, Find(source.Curve, source.Source)));
+        ComboBox other = form.Add("Вторая кривая", Form.Choice(titles, source.OtherCurve is null ? curves.Length - 1 : Find(source.OtherCurve, source.Source)));
         NumberBox value = form.Add("Значение", Form.Number(source.Value));
         ColorSwatchPicker color = form.Add("Цвет", new ColorSwatchPicker(source.Color));
         CheckBox bothSides = form.Add("Другая сторона", new CheckBox
@@ -184,6 +193,15 @@ internal static class TabletDialogs
                 return;
             }
 
+            if (selected == FillKind.BetweenCurves && curves[curve.SelectedIndex].Source != curves[other.SelectedIndex].Source)
+            {
+                // У кривых разных файлов разные сетки глубин: заливка между ними
+                // потребовала бы пересчёта, а его в программе нет.
+                form.ShowError("Заливка между кривыми разных файлов не строится. Выберите кривые одного файла.");
+                args.Cancel = true;
+                return;
+            }
+
             if (selected == FillKind.ToValue && double.IsNaN(value.Value))
             {
                 form.ShowError("Укажите граничное значение.");
@@ -195,8 +213,9 @@ internal static class TabletDialogs
             result = new FillDefinition
             {
                 Kind = selected,
-                Curve = mnemonics[curve.SelectedIndex],
-                OtherCurve = selected == FillKind.BetweenCurves ? mnemonics[other.SelectedIndex] : null,
+                Curve = curves[curve.SelectedIndex].Mnemonic,
+                OtherCurve = selected == FillKind.BetweenCurves ? curves[other.SelectedIndex].Mnemonic : null,
+                Source = curves[curve.SelectedIndex].Source,
                 Value = selected == FillKind.ToValue ? value.Value : 0,
                 // Заливка полупрозрачная, чтобы кривые и сетка под ней оставались видны.
                 Color = SceneColors.WithAlpha(color.Value, 0x55),

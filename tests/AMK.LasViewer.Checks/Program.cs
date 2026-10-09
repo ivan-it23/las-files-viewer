@@ -220,7 +220,7 @@ Check("проект: запись, чтение и поиск файлов по�
     template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Logarithmic(1, 10000), Curves = [new CurveStyle { Mnemonic = "RO1_400_S" }] });
     DocumentAnnotations annotations = new();
     annotations.Markers.Add(new DepthMarker { Depth = 2032.2, Name = "Кровля" });
-    ProjectSnapshot snapshot = new() { SyncDepth = false, Panels = [0] };
+    ProjectSnapshot snapshot = new() { SyncDepth = false, Panels = [new ProjectPanel(false, 0)] };
     snapshot.Documents.Add(new ProjectDocumentEntry { Path = lasPath, Template = template, Annotations = annotations, ViewTop = 2100, ViewPixelsPerUnit = 7.5 });
 
     string json = ProjectSerializer.Write(snapshot, projectPath);
@@ -230,7 +230,7 @@ Check("проект: запись, чтение и поиск файлов по�
     Equal(read.Documents[0].Annotations.Markers[0].Name, "Кровля");
     Equal(read.Documents[0].ViewTop, 2100.0);
     Equal(read.SyncDepth, false);
-    Equal(string.Join(",", read.Panels), "0");
+    Equal(string.Join(",", read.Panels), "ProjectPanel { Combined = False, Index = 0 }");
 
     // Папку проекта вместе с данными перенесли: полный путь устарел,
     // файл находится по относительному.
@@ -241,6 +241,152 @@ Check("проект: запись, чтение и поиск файлов по�
     File.Delete(Path.Combine(moved, "Скважина 3201", "данные", "400.las"));
     Equal(ProjectSerializer.Resolve(read.Documents[0], movedProject), null);
     Directory.Delete(moved, recursive: true);
+});
+
+Check("кривые разных файлов: свои глубины, сдвиг, значения только в пределах записи", () =>
+{
+    // ЭМК с шагом 0,1 от 100 м и РК с шагом 0,2 от 100,3 м — сетки разные.
+    TabletData emk = TabletData.From(Document(IndexDirection.Increasing, [100.0, 100.1, 100.2, 100.3, 100.4], [5, 6, 7, 8, 9], ("RO", "Омм")));
+    TabletData rk = TabletData.From(Document(IndexDirection.Increasing, [100.3, 100.5, 100.7], [11, 12, 13], ("GR", "мкР/ч")));
+    TabletSources sources = new(
+        new TabletSource { Key = "emk", Name = "ЭМК", Data = emk },
+        [new TabletSource { Key = "rk", Name = "РК", Data = rk, DepthShift = 0.5 }]);
+
+    Equal(sources.Top, 100.0);
+    Near(sources.Bottom, 101.2);
+    Equal(sources.Series(null, "RO")!.Depths.Length, 5);
+    TabletSeries gr = sources.Series("rk", "GR")!;
+    Equal(string.Join(";", gr.Depths.Select(depth => depth.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))), "100.8;101.0;101.2");
+    Equal(gr.ValueAt(101.05), 12.0);
+    True(double.IsNaN(gr.ValueAt(100.2)), "выше записи РК значения нет");
+    True(double.IsNaN(gr.ValueAt(101.5)), "ниже записи РК значения нет");
+    Equal(sources.Label(null), null);
+    Equal(sources.Label("rk"), "РК");
+    True(sources.Series("нет", "GR") is null, "кривая закрытого файла");
+    Equal(sources.MissingReason("нет"), "файл не открыт");
+
+    // Сцена: кривая РК рисуется на треке ЭМК по своим глубинам.
+    TabletTemplate template = new();
+    template.Tracks.Add(new TrackDefinition
+    {
+        Scale = TrackScale.Linear(0, 20),
+        Curves = [new CurveStyle { Mnemonic = "RO" }, new CurveStyle { Mnemonic = "GR", Source = "rk" }]
+    });
+    DepthViewport viewport = new(100, 100, 200);
+    TabletScene scene = TabletSceneBuilder.BuildBody(sources, template, [200], viewport, null);
+    ScenePolyline[] lines = scene.Layers[1].Items.OfType<ScenePolyline>().ToArray();
+    Equal(lines.Length, 2);
+    Near(lines[1].Points[0].Y, 80);
+    TabletScene header = TabletSceneBuilder.BuildHeader(sources, template, [200]);
+    True(header.Layers[1].Items.OfType<SceneText>().Any(text => text.Text == "GR · РК"), "в шапке нет подписи файла у кривой РК");
+
+    // Совместный планшет: над треком одного файла — имя файла, у кривых его нет;
+    // на смешанном треке — у каждой кривой.
+    TabletSources combined = new(null, [sources.All[0], sources.All[1]]);
+    TrackDefinition single = new() { Scale = TrackScale.Linear(0, 1), Curves = [new CurveStyle { Mnemonic = "RO", Source = "emk" }] };
+    Equal(TabletSceneBuilder.TrackCaption(combined, single), "ЭМК");
+    Equal(TabletSceneBuilder.CurveTitle(combined, single.Curves[0], single), "RO");
+    Equal(TabletSceneBuilder.TrackCaption(combined, template.Tracks[0]), null);
+    template.Tracks[0].Curves[0].Source = "emk";
+    Equal(TabletSceneBuilder.CurveTitle(combined, template.Tracks[0].Curves[0], template.Tracks[0]), "RO · ЭМК");
+    TabletTemplate captioned = new() { Tracks = [single] };
+    Near(TabletSceneBuilder.HeaderHeight(captioned, combined), TabletSceneBuilder.HeaderHeight(captioned) + TabletSceneBuilder.HeaderRowHeight);
+});
+
+Check("трек сравнения: кривая другого файла рядом с треком, исходный трек не меняется", () =>
+{
+    TabletTemplate template = new();
+    template.Tracks.Add(new TrackDefinition
+    {
+        Scale = TrackScale.Logarithmic(1, 1000),
+        Curves = [new CurveStyle { Mnemonic = "RO1", Source = "emk", Color = CurvePalette.ForPosition(0) }, new CurveStyle { Mnemonic = "RO2", Source = "emk", Color = CurvePalette.ForPosition(1) }],
+        Fills = [new FillDefinition { Kind = FillKind.BetweenCurves, Curve = "RO1", OtherCurve = "RO2", Source = "emk" }]
+    });
+    template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Linear(0, 100) });
+
+    int placed = TemplateEditing.PlaceCurve(template, 0, new CurveStyle { Mnemonic = "GR", Source = "rk" }, () => TrackScale.Linear(0, 30));
+    Equal(placed, 1);
+    Equal(template.Tracks.Count, 3);
+    Same(template.Tracks[0].Curves.Select(curve => curve.Mnemonic), ["RO1", "RO2"]);
+    Same(template.Tracks[1].Curves.Select(curve => curve.Mnemonic), ["RO1", "RO2", "GR"]);
+    Equal(template.Tracks[1].Fills.Count, 0);
+    Equal(template.Tracks[1].Scale.Kind, ScaleKind.Logarithmic);
+    Equal(template.Tracks[1].Curves[2].Scale!.Right, 30.0);
+    True(template.Tracks[1].Curves.Select(curve => curve.Color).Distinct().Count() == 3, "у новой кривой цвет как у соседней");
+
+    // На смешанный трек — без нового трека; повтор — отказ.
+    Equal(TemplateEditing.PlaceCurve(template, 1, new CurveStyle { Mnemonic = "NKT", Source = "rk" }, () => TrackScale.Linear(0, 5)), 1);
+    Equal(template.Tracks.Count, 3);
+    Equal(TemplateEditing.PlaceCurve(template, 1, new CurveStyle { Mnemonic = "GR", Source = "rk" }, () => TrackScale.Linear(0, 5)), -1);
+
+    // На пустой трек — шкала трека по кривой.
+    Equal(TemplateEditing.PlaceCurve(template, 2, new CurveStyle { Mnemonic = "GR", Source = "rk" }, () => TrackScale.Linear(0, 30)), 2);
+    Equal(template.Tracks[2].Scale.Right, 30.0);
+    True(template.Tracks[2].Curves[0].Scale is null, "на пустом треке кривая идёт по шкале трека");
+
+    // Кривая того же файла на трек этого файла — просто добавляется.
+    Equal(TemplateEditing.PlaceCurve(template, 0, new CurveStyle { Mnemonic = "RO3", Source = "emk" }, () => TrackScale.Linear(0, 1)), 0);
+    Equal(template.Tracks.Count, 3);
+});
+
+Check("ссылки на файлы: проект хранит номера, библиотека шаблонов — только свои кривые", () =>
+{
+    TabletTemplate template = new() { Name = "ЭМК" };
+    template.Tracks.Add(new TrackDefinition { Scale = TrackScale.Linear(0, 1), Curves = [new CurveStyle { Mnemonic = "RO1" }] });
+    template.Tracks.Add(new TrackDefinition
+    {
+        Scale = TrackScale.Linear(0, 1),
+        Curves = [new CurveStyle { Mnemonic = "GR", Source = "file-rk" }],
+        Fills = [new FillDefinition { Kind = FillKind.ToLeftEdge, Curve = "GR", Source = "file-rk" }]
+    });
+
+    TabletTemplate numbered = TemplateEditing.RemapSources(template, key => key == "file-rk" ? "1" : null);
+    Equal(numbered.Tracks[1].Curves[0].Source, "1");
+    Equal(numbered.Tracks[1].Fills[0].Source, "1");
+    Equal(template.Tracks[1].Curves[0].Source, "file-rk");
+    TabletTemplate dropped = TemplateEditing.RemapSources(template, _ => null);
+    Equal(dropped.Tracks[1].Curves.Count, 0);
+    Equal(dropped.Tracks[0].Curves.Count, 1);
+
+    TabletTemplate roundTrip = TemplateSerializer.TemplateFromJson(TemplateSerializer.TemplateToJson(numbered));
+    Equal(roundTrip.Tracks[1].Curves[0].Source, "1");
+    Equal(roundTrip.Tracks[0].Curves[0].Source, null);
+
+    // В библиотеку чужие кривые не попадают; трек только из чужих убирается.
+    TabletTemplate library = TemplateSerializer.ReadTemplate(TemplateSerializer.WriteTemplate(template));
+    Equal(library.Tracks.Count, 1);
+    True(!TemplateSerializer.WriteTemplate(template).Contains("source"), "в файле шаблона осталась ссылка на файл");
+});
+
+Check("проект версии 2: совместный планшет, сдвиги, раскладка; версия 1 читается", () =>
+{
+    TabletTemplate combinedTemplate = new() { Name = "ЭМК + РК" };
+    combinedTemplate.Tracks.Add(new TrackDefinition
+    {
+        Scale = TrackScale.Linear(0, 1),
+        Curves = [new CurveStyle { Mnemonic = "RO1", Source = "0" }, new CurveStyle { Mnemonic = "GR", Source = "1" }]
+    });
+    ProjectSnapshot snapshot = new() { Panels = [new ProjectPanel(true, 0), new ProjectPanel(false, 1)] };
+    snapshot.Documents.Add(new ProjectDocumentEntry { Path = @"C:\данные\51_ЭМК.las", Template = new TabletTemplate() });
+    snapshot.Documents.Add(new ProjectDocumentEntry { Path = @"C:\данные\51_РК.las", Template = new TabletTemplate() });
+    ProjectCombinedEntry combined = new() { Name = "ЭМК + РК", Template = combinedTemplate, ViewTop = 300, ViewPixelsPerUnit = 4 };
+    combined.Sources.Add(new ProjectCombinedSource(0, 0));
+    combined.Sources.Add(new ProjectCombinedSource(1, -1.5));
+    snapshot.Combined.Add(combined);
+
+    string json = ProjectSerializer.Write(snapshot, @"C:\данные\проект.lvproj");
+    True(json.Contains("\"version\": 2"), "версия проекта не 2");
+    ProjectSnapshot read = ProjectSerializer.Read(json);
+    Equal(read.Combined.Single().Name, "ЭМК + РК");
+    Equal(read.Combined[0].Sources[1], new ProjectCombinedSource(1, -1.5));
+    Equal(read.Combined[0].Template.Tracks[0].Curves[1].Source, "1");
+    Equal(read.Combined[0].ViewTop, 300.0);
+    Same(read.Panels.Select(panel => $"{panel.Combined}:{panel.Index}"), ["True:0", "False:1"]);
+
+    ProjectSnapshot old = ProjectSerializer.Read(
+        "{\"format\":\"lasviewer-project\",\"version\":1,\"documents\":[{\"path\":\"a.las\",\"template\":{\"tracks\":[]}}],\"layout\":{\"panels\":[0],\"sync_depth\":true}}");
+    Equal(old.Combined.Count, 0);
+    Equal(old.Panels.Single(), new ProjectPanel(false, 0));
 });
 
 Check("разбивка по страницам и масштаб треков под ширину", () =>
@@ -318,12 +464,12 @@ await CheckAsync("скважина 3201: открытие через движо�
     watch.Restart();
     double[] widths = TabletSceneBuilder.FitTrackWidths(template, 1000, 130);
     DepthViewport viewport = new(data.Top, DepthViewport.PixelsPerUnitForRatio(500, "M"), 800);
-    TabletScene scene = TabletSceneBuilder.BuildBody(data, template, widths, viewport, annotations);
+    TabletScene scene = TabletSceneBuilder.BuildBody(TabletSources.Single(data), template, widths, viewport, annotations);
     Console.WriteLine($"    сцена 1:500 построена за {watch.ElapsedMilliseconds} мс: {scene.Layers.Sum(l => l.Items.Count)} элементов");
     True(scene.Layers[3].Items.OfType<ScenePolygon>().Any(), "нет заливки между RO1 и RO4");
 
     TabletPage page = TabletPageBuilder.Build(
-        data, template, annotations, ["Скважина 3201", "3201 ИК.las"], widths, 2100, 2200, viewport.PixelsPerUnit);
+        TabletSources.Single(data), template, annotations, ["Скважина 3201", "3201 ИК.las"], widths, 2100, 2200, viewport.PixelsPerUnit);
     string svg = SvgWriter.Write(page.Scene, page.Width, page.Height, "3201");
     System.Xml.Linq.XDocument.Parse(svg);
     True(svg.Contains("Проверить") && svg.Contains("RO1_400_S") && !svg.Contains("Маркер"), "в SVG не те подписи: маркер 2040 м вне страницы 2100–2200 м");
@@ -332,7 +478,7 @@ await CheckAsync("скважина 3201: открытие через движо�
     // для ручной и автоматической проверки окна.
     if (Environment.GetEnvironmentVariable("LASVIEWER_DEMO_PROJECT") is { Length: > 0 } demoPath)
     {
-        ProjectSnapshot demo = new() { SyncDepth = true, Panels = [0, 1] };
+        ProjectSnapshot demo = new() { SyncDepth = true, Panels = [new ProjectPanel(false, 0), new ProjectPanel(false, 1)] };
         foreach (string name in new[] { "400.las", "2000.las" })
         {
             LasDocument part = await engine.OpenLasAsync(Path.Combine(samples, name), CancellationToken.None);

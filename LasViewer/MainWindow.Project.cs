@@ -101,7 +101,7 @@ public sealed partial class MainWindow
         try
         {
             Panels.SaveViews();
-            project.SaveTo(path, project.Snapshot(Panels.Documents, Panels.SyncDepth));
+            project.SaveTo(path, project.Snapshot(Panels.Contents, Panels.SyncDepth));
             SetStatus($"Проект сохранён: {path}");
             return true;
         }
@@ -181,10 +181,58 @@ public sealed partial class MainWindow
             }
         }
 
-        List<OpenedDocument> panels = snapshot.Panels
-            .Where(opened.ContainsKey)
-            .Select(index => opened[index])
-            .ToList();
+        // Кривые других файлов ссылаются на файл номером в проекте; теперь,
+        // когда файлы открыты, номер заменяется идентификатором движка.
+        // Кривые файлов, которые не открылись, убираются.
+        string? FileIdOf(string number) =>
+            int.TryParse(number, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int index)
+            && opened.TryGetValue(index, out OpenedDocument? document)
+                ? document.Document.FileId
+                : null;
+
+        foreach (OpenedDocument document in opened.Values)
+        {
+            document.Template = TemplateEditing.RemapSources(document.Template, FileIdOf);
+        }
+
+        List<CombinedTablet?> combined = [];
+        foreach (ProjectCombinedEntry entry in snapshot.Combined)
+        {
+            List<CombinedSource> sources = entry.Sources
+                .Where(source => opened.ContainsKey(source.Document))
+                .Select(source => new CombinedSource(opened[source.Document]) { DepthShift = source.DepthShift })
+                .ToList();
+            if (sources.Count == 0)
+            {
+                combined.Add(null);
+                continue;
+            }
+
+            CombinedTablet tablet = new()
+            {
+                Name = entry.Name,
+                Template = TemplateEditing.RemapSources(entry.Template, FileIdOf),
+                Annotations = entry.Annotations,
+                ViewTop = entry.ViewTop,
+                ViewPixelsPerUnit = entry.ViewPixelsPerUnit
+            };
+            tablet.Sources.AddRange(sources);
+            project.AddCombined(tablet);
+            combined.Add(tablet);
+        }
+
+        List<ITabletContent> panels = [];
+        foreach (ProjectPanel panel in snapshot.Panels)
+        {
+            ITabletContent? content = panel.Combined
+                ? combined.ElementAtOrDefault(panel.Index)
+                : opened.GetValueOrDefault(panel.Index);
+            if (content is not null)
+            {
+                panels.Add(content);
+            }
+        }
+
         if (panels.Count == 0 && project.Documents.Count > 0)
         {
             panels.Add(project.Documents[0]);
@@ -193,7 +241,7 @@ public sealed partial class MainWindow
         Panels.SyncDepth = snapshot.SyncDepth;
         SyncCheck.IsChecked = snapshot.SyncDepth;
         Panels.SetLayout(panels);
-        active = Panels.FocusedDocument;
+        active = Panels.FocusedDocument ?? (Panels.FocusedContent as CombinedTablet)?.Sources[0].Document ?? project.Documents.FirstOrDefault();
         project.Adopt(path);
         ShowActiveDocument();
         SetStatus($"Открыт проект {project.DisplayName}: файлов {project.Documents.Count}");
@@ -269,6 +317,14 @@ public sealed partial class MainWindow
 
     private async Task<bool> RequireActiveAsync()
     {
+        if (Panels.FocusedContent is CombinedTablet)
+        {
+            // Шаблон описывает треки одного файла; для совместного планшета
+            // шаблоны будут позже.
+            await dialogs.ShowMessageAsync("Шаблон", "Шаблоны относятся к планшету одного файла. Для совместного планшета они пока не поддерживаются.");
+            return false;
+        }
+
         if (active is not null)
         {
             return true;
@@ -345,7 +401,7 @@ public sealed partial class MainWindow
         foreach (OpenedDocument document in targets)
         {
             document.Template = template?.Clone() ?? DefaultTemplateBuilder.Build(document.Document);
-            Panels.RefreshDocument(document);
+            Panels.RefreshContent(document);
             IReadOnlyList<string> missing = document.MissingTemplateCurves();
             if (missing.Count > 0)
             {

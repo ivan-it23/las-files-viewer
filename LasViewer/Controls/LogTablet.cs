@@ -51,7 +51,9 @@ public sealed partial class LogTablet : UserControl
     private Border cursorLabel = new();
     private TextBlock cursorText = new();
 
-    private TabletData? data;
+    /// <summary>Файлы, из которых рисуется планшет: свой и другие (или все — у совместного).</summary>
+    private TabletSources? data;
+    private ITabletContent? content;
     private TabletTemplate? template;
     private DocumentAnnotations? annotations;
     private string documentKey = string.Empty;
@@ -139,6 +141,12 @@ public sealed partial class LogTablet : UserControl
     /// <summary>Очередь диалогов окна; без неё редактирование недоступно.</summary>
     internal DialogService? Dialogs { get; set; }
 
+    /// <summary>Окно: файлы проекта для кривых других файлов.</summary>
+    internal ITabletHost? Host { get; set; }
+
+    /// <summary>Что показано: файл или совместный планшет.</summary>
+    internal ITabletContent? ShownContent => content;
+
     public double Top => top;
 
     public double PixelsPerUnit => pixelsPerUnit;
@@ -148,7 +156,7 @@ public sealed partial class LogTablet : UserControl
     /// <summary>Глубина под курсором мыши; <c>null</c>, если курсор вне планшета.</summary>
     public double? CursorDepth => cursorDepth;
 
-    public bool HasData => data is not null && data.Depths.Length > 0;
+    public bool HasData => data is not null && data.HasData;
 
     public string IndexUnit => data?.IndexUnit ?? string.Empty;
 
@@ -167,18 +175,17 @@ public sealed partial class LogTablet : UserControl
     /// Показывает данные. Без сохранённого вида — масштаб 1:500 от начала
     /// записи: привычный масштаб, на котором кривые читаются.
     /// </summary>
-    public void Show(
-        TabletData tabletData,
-        TabletTemplate tabletTemplate,
-        DocumentAnnotations documentAnnotations,
-        string key,
+    internal void Show(
+        ITabletContent shown,
+        TabletSources sources,
         double? savedTop,
         double? savedPixelsPerUnit)
     {
-        data = tabletData;
-        template = tabletTemplate;
-        annotations = documentAnnotations;
-        documentKey = key;
+        content = shown;
+        data = sources;
+        template = shown.Template;
+        annotations = shown.Annotations;
+        documentKey = shown.Key;
         cursorDepth = null;
         Rebuild();
 
@@ -203,6 +210,7 @@ public sealed partial class LogTablet : UserControl
     public void Clear()
     {
         data = null;
+        content = null;
         template = null;
         annotations = null;
         headerPanel.Children.Clear();
@@ -217,11 +225,19 @@ public sealed partial class LogTablet : UserControl
     /// <summary>Перестроить шапку и тело после изменения шаблона или пометок.</summary>
     public void Refresh()
     {
-        if (data is null)
+        if (data is null || content is null)
         {
             return;
         }
 
+        // Шаблон мог сослаться на новый файл — источники собираются заново.
+        if (Host is not null)
+        {
+            data = Host.SourcesFor(content);
+        }
+
+        template = content.Template;
+        annotations = content.Annotations;
         Rebuild();
         ScheduleRedraw();
     }
@@ -669,15 +685,14 @@ public sealed partial class LogTablet : UserControl
         cursorLabel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (visible)
         {
-            double step = data.Depths.Length > 1 ? Math.Abs(data.Depths[1] - data.Depths[0]) : 0.1;
+            double step = data.Step;
             int decimals = Math.Clamp((int)Math.Ceiling(-Math.Log10(step > 0 ? step : 0.1)) + 1, 1, 4);
             cursorText.Text = cursorDepth!.Value.ToString("F" + decimals, CultureInfo.CurrentCulture);
             Canvas.SetLeft(cursorLabel, 2);
             Canvas.SetTop(cursorLabel, y!.Value - 9);
         }
 
-        int row = visible ? data.NearestRow(cursorDepth!.Value) : -1;
-        UpdateHeaderValues(row);
+        UpdateHeaderValues(visible ? cursorDepth : null);
     }
 
     private void UpdateSelectionVisuals()

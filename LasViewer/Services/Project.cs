@@ -5,9 +5,29 @@ using AMK.LasViewer.Engine;
 namespace AMK.LasViewer.App.Services;
 
 /// <summary>Открытый в окне файл: документ, данные планшета, шаблон, пометки и последний вид.</summary>
-internal sealed class OpenedDocument(LasDocument document)
+internal sealed class OpenedDocument(LasDocument document) : ITabletContent
 {
     public LasDocument Document { get; } = document;
+
+    public string Key => Document.FileId;
+
+    public string Title => Document.Name;
+
+    public string Tooltip => Document.Path;
+
+    /// <summary>Скважина из ~Well (WELL); пусто, если не указана.</summary>
+    public string Well => Document.Section(LasSectionKind.Well)?.Items
+        .FirstOrDefault(item => item.Mnemonic.Equals("WELL", StringComparison.OrdinalIgnoreCase))?.Value.Trim() ?? string.Empty;
+
+    /// <summary>Этот файл как источник кривых планшета.</summary>
+    public TabletSource AsSource(double depthShift = 0) => new()
+    {
+        Key = Document.FileId,
+        Name = System.IO.Path.GetFileNameWithoutExtension(Document.Name),
+        Data = TabletData,
+        Well = Well,
+        DepthShift = depthShift
+    };
 
     public TabletData TabletData { get; } = TabletData.From(document);
 
@@ -22,9 +42,14 @@ internal sealed class OpenedDocument(LasDocument document)
 
     public double? ViewPixelsPerUnit { get; set; }
 
-    /// <summary>Мнемоники шаблона, которых нет в файле.</summary>
+    /// <summary>Мнемоники шаблона, которых нет в файле (кривые других файлов не в счёт).</summary>
     public IReadOnlyList<string> MissingTemplateCurves() =>
-        Template.Mnemonics.Distinct().Where(mnemonic => TabletData.Values(mnemonic) is null).ToList();
+        Template.Tracks.SelectMany(track => track.Curves)
+            .Where(curve => curve.Source is null)
+            .Select(curve => curve.Mnemonic)
+            .Distinct()
+            .Where(mnemonic => TabletData.Values(mnemonic) is null)
+            .ToList();
 }
 
 internal sealed record OpenFailure(string Path, string Message);
@@ -36,8 +61,12 @@ internal sealed record OpenFailure(string Path, string Message);
 internal sealed class Project(EngineHost engine)
 {
     private readonly List<OpenedDocument> documents = [];
+    private readonly List<CombinedTablet> combined = [];
 
     public IReadOnlyList<OpenedDocument> Documents => documents;
+
+    /// <summary>Совместные планшеты проекта.</summary>
+    public IReadOnlyList<CombinedTablet> Combined => combined;
 
     /// <summary>Файл проекта; <c>null</c>, пока проект не сохранён.</summary>
     public string? Path { get; private set; }
@@ -58,6 +87,56 @@ internal sealed class Project(EngineHost engine)
         }
     }
 
+    public OpenedDocument? FindByFileId(string fileId) =>
+        documents.FirstOrDefault(document => document.Document.FileId == fileId);
+
+    public void AddCombined(CombinedTablet tablet)
+    {
+        combined.Add(tablet);
+        MarkDirty();
+    }
+
+    public void RemoveCombined(CombinedTablet tablet)
+    {
+        if (combined.Remove(tablet))
+        {
+            MarkDirty();
+        }
+    }
+
+    /// <summary>
+    /// Файлы планшета. У планшета файла — сам файл и открытые файлы, на кривые
+    /// которых ссылается его шаблон (с той же единицей глубины); у совместного
+    /// — его файлы со сдвигами.
+    /// </summary>
+    public TabletSources SourcesFor(ITabletContent content)
+    {
+        switch (content)
+        {
+            case CombinedTablet tablet when tablet.Sources.Count > 0:
+                return new TabletSources(null, tablet.Sources.Select(source => source.Document.AsSource(source.DepthShift)));
+            case OpenedDocument document:
+            {
+                TabletSource own = document.AsSource();
+                IEnumerable<TabletSource> others = document.Template.Tracks
+                    .SelectMany(track => track.Curves)
+                    .Select(curve => curve.Source)
+                    .OfType<string>()
+                    .Distinct()
+                    .Select(FindByFileId)
+                    .OfType<OpenedDocument>()
+                    .Where(other => SameDepthUnit(other, document))
+                    .Select(other => other.AsSource());
+                return new TabletSources(own, others);
+            }
+            default:
+                throw new InvalidOperationException("У совместного планшета не осталось файлов.");
+        }
+    }
+
+    public static bool SameDepthUnit(OpenedDocument first, OpenedDocument second) =>
+        string.Equals(first.TabletData.IndexUnit.Trim(), second.TabletData.IndexUnit.Trim(), StringComparison.OrdinalIgnoreCase);
+
     public OpenedDocument? Find(string path)
     {
         string normalized = Normalize(path);
@@ -76,9 +155,29 @@ internal sealed class Project(EngineHost engine)
         return opened;
     }
 
+    /// <summary>
+    /// Закрывает файл. Его кривые убираются с планшетов других файлов и с
+    /// совместных планшетов; совместный планшет без файлов удаляется.
+    /// </summary>
     public async Task CloseAsync(OpenedDocument document)
     {
         documents.Remove(document);
+        string closedKey = document.Document.FileId;
+        foreach (OpenedDocument other in documents)
+        {
+            other.Template = TemplateEditing.RemapSources(other.Template, key => key == closedKey ? null : key);
+        }
+
+        foreach (CombinedTablet tablet in combined.ToList())
+        {
+            tablet.Sources.RemoveAll(source => source.Document == document);
+            tablet.Template = TemplateEditing.RemapSources(tablet.Template, key => key == closedKey ? null : key);
+            if (tablet.Sources.Count == 0)
+            {
+                combined.Remove(tablet);
+            }
+        }
+
         MarkDirty();
         try
         {
@@ -99,33 +198,62 @@ internal sealed class Project(EngineHost engine)
             await CloseAsync(document);
         }
 
+        combined.Clear();
         Path = null;
         IsDirty = false;
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Снимок для записи: панели перечислены номерами файлов.</summary>
-    public ProjectSnapshot Snapshot(IReadOnlyList<OpenedDocument> panels, bool syncDepth)
+    /// <summary>
+    /// Снимок для записи. Ссылки кривых на файлы и панели записываются
+    /// номерами файлов в проекте: идентификаторы движка при следующем
+    /// открытии будут другими.
+    /// </summary>
+    public ProjectSnapshot Snapshot(IReadOnlyList<ITabletContent> panels, bool syncDepth)
     {
+        Dictionary<string, string> numbers = documents
+            .Select((document, index) => (document.Document.FileId, index))
+            .ToDictionary(pair => pair.FileId, pair => pair.index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        TabletTemplate ToProject(TabletTemplate template) => TemplateEditing.RemapSources(template, key => numbers.GetValueOrDefault(key));
+
         ProjectSnapshot snapshot = new() { SyncDepth = syncDepth };
         foreach (OpenedDocument document in documents)
         {
             snapshot.Documents.Add(new ProjectDocumentEntry
             {
                 Path = document.Document.Path,
-                Template = document.Template,
+                Template = ToProject(document.Template),
                 Annotations = document.Annotations,
                 ViewTop = document.ViewTop,
                 ViewPixelsPerUnit = document.ViewPixelsPerUnit
             });
         }
 
-        foreach (OpenedDocument panel in panels)
+        foreach (CombinedTablet tablet in combined)
         {
-            int index = documents.IndexOf(panel);
+            ProjectCombinedEntry entry = new()
+            {
+                Name = tablet.Name,
+                Template = ToProject(tablet.Template),
+                Annotations = tablet.Annotations,
+                ViewTop = tablet.ViewTop,
+                ViewPixelsPerUnit = tablet.ViewPixelsPerUnit
+            };
+            entry.Sources.AddRange(tablet.Sources.Select(source => new ProjectCombinedSource(documents.IndexOf(source.Document), source.DepthShift)));
+            snapshot.Combined.Add(entry);
+        }
+
+        foreach (ITabletContent panel in panels)
+        {
+            int index = panel switch
+            {
+                OpenedDocument document => documents.IndexOf(document),
+                CombinedTablet tablet => combined.IndexOf(tablet),
+                _ => -1
+            };
             if (index >= 0)
             {
-                snapshot.Panels.Add(index);
+                snapshot.Panels.Add(new ProjectPanel(panel is CombinedTablet, index));
             }
         }
 

@@ -61,6 +61,7 @@ public sealed partial class MainWindow : Window
         project.StateChanged += (_, _) => UpdateTitle();
 
         Panels.Dialogs = dialogs;
+        Panels.Host = this;
         Panels.FocusChanged += (_, _) =>
         {
             active = Panels.FocusedDocument ?? active;
@@ -330,6 +331,7 @@ public sealed partial class MainWindow : Window
         int position = project.Documents.ToList().IndexOf(closing);
         Panels.Remove(closing);
         await project.CloseAsync(closing);
+        AfterDocumentClosed();
 
         if (active == closing)
         {
@@ -388,7 +390,9 @@ public sealed partial class MainWindow : Window
     private void UpdateTitle()
     {
         string dirty = project.IsDirty && project.Documents.Count > 0 ? "*" : string.Empty;
-        string file = active is null ? string.Empty : $" — {active.Document.Name}";
+        string file = Panels.FocusedContent is CombinedTablet combined
+            ? $" — {combined.Title}"
+            : active is null ? string.Empty : $" — {active.Document.Name}";
         Title = $"{project.DisplayName}{dirty}{file} — {AppInfo.ProductName} {AppInfo.VersionText}";
         ProjectTitle.Text = $"Проект: {project.DisplayName}{dirty}";
     }
@@ -463,6 +467,18 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // Совместные планшеты — после файлов; под планшетом — его файлы со сдвигами.
+        foreach (CombinedTablet tablet in project.Combined)
+        {
+            TreeViewNode tabletNode = new() { Content = new CombinedItem(tablet), IsExpanded = false };
+            foreach (CombinedSource source in tablet.Sources)
+            {
+                tabletNode.Children.Add(new TreeViewNode { Content = new CombinedItem(tablet, source) });
+            }
+
+            ProjectTree.RootNodes.Add(tabletNode);
+        }
+
         ProjectTree.SelectedNode = activeNode;
         ProjectEmptyText.Visibility = project.Documents.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -501,22 +517,31 @@ public sealed partial class MainWindow : Window
                 .Append('\n');
         }
 
-        if (Panels.FocusedTablet is { HasData: true } tablet && Panels.FocusedDocument is { } focused)
+        foreach (CombinedTablet combined in project.Combined)
+        {
+            text.Append("Совместный планшет «").Append(combined.Name).Append("»: ")
+                .Append(string.Join(", ", combined.Sources.Select(source => source.Document.Document.Name
+                    + (source.DepthShift == 0 ? string.Empty : $" (показан со сдвигом {source.DepthShift.ToString("+0.##;-0.##", invariant)} {source.Document.TabletData.IndexUnit})"))))
+                .Append('\n');
+        }
+
+        if (Panels.FocusedTablet is { HasData: true } tablet && Panels.FocusedContent is { } focused)
         {
             double top = tablet.Top;
             double bottom = tablet.Top + tablet.BodyHeight / tablet.PixelsPerUnit;
-            text.Append("Видимый интервал планшета ").Append(focused.Document.Name).Append(": ")
+            string name = focused is CombinedTablet focusedCombined ? $"совместного планшета «{focusedCombined.Name}»" : focused.Title;
+            text.Append("Видимый интервал планшета ").Append(name).Append(": ")
                 .Append(top.ToString("0.#", invariant)).Append('–').Append(bottom.ToString("0.#", invariant))
-                .Append(' ').Append(focused.TabletData.IndexUnit).Append('\n');
+                .Append(' ').Append(tablet.IndexUnit).Append('\n');
             if (tablet.CursorDepth is { } cursor)
             {
-                text.Append("Курсор: ").Append(cursor.ToString("0.##", invariant)).Append(' ').Append(focused.TabletData.IndexUnit).Append('\n');
+                text.Append("Курсор: ").Append(cursor.ToString("0.##", invariant)).Append(' ').Append(tablet.IndexUnit).Append('\n');
             }
         }
 
         if (Panels.Count > 1)
         {
-            text.Append("Рядом показаны: ").Append(string.Join(", ", Panels.Documents.Select(document => document.Document.Name))).Append('\n');
+            text.Append("Рядом показаны: ").Append(string.Join(", ", Panels.Contents.Select(content => content.Title))).Append('\n');
         }
 
         return text.ToString();
@@ -547,11 +572,35 @@ public sealed partial class MainWindow : Window
             signature.Append(';');
         }
 
+        foreach (CombinedTablet tablet in project.Combined)
+        {
+            signature.Append("c|").Append(tablet.Id).Append(tablet.Name);
+            foreach (CombinedSource source in tablet.Sources)
+            {
+                signature.Append(',').Append(source.Document.Document.FileId).Append(source.DepthShift.ToString("R", CultureInfo.InvariantCulture));
+            }
+
+            signature.Append(';');
+        }
+
         return signature.ToString();
     }
 
     private void ProjectTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
+        if (args.InvokedItem is TreeViewNode { Content: CombinedItem combined })
+        {
+            // Как и для файла — не внутри события дерева (см. ниже).
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (project.Combined.Contains(combined.Tablet))
+                {
+                    ShowCombined(combined.Tablet, beside: false);
+                }
+            });
+            return;
+        }
+
         if (args.InvokedItem is not TreeViewNode { Content: ProjectItem item })
         {
             return;
@@ -583,7 +632,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Кривую из дерева можно перетащить на трек планшета того же файла.</summary>
+    /// <summary>
+    /// Кривую из дерева можно перетащить на трек любого планшета; кривая
+    /// другого файла ляжет на трек сравнения рядом с треком.
+    /// </summary>
     private void ProjectTree_DragItemsStarting(TreeView sender, TreeViewDragItemsStartingEventArgs args)
     {
         object? item = args.Items.FirstOrDefault();
@@ -612,6 +664,13 @@ public sealed partial class MainWindow : Window
             source = VisualTreeHelper.GetParent(source);
         }
 
+        if (source is TreeViewItem combinedContainer && ProjectTree.NodeFromContainer(combinedContainer) is { Content: CombinedItem combined })
+        {
+            CombinedMenu(combined.Tablet).ShowAt(combinedContainer, new FlyoutShowOptions { Position = e.GetPosition(combinedContainer) });
+            e.Handled = true;
+            return;
+        }
+
         if (source is not TreeViewItem container || ProjectTree.NodeFromContainer(container) is not { Content: ProjectItem item })
         {
             return;
@@ -631,6 +690,14 @@ public sealed partial class MainWindow : Window
             ShowActiveDocument();
         };
         menu.Items.Add(beside);
+
+        MenuFlyoutItem combine = new() { Text = "Совместный планшет…", IsEnabled = project.Documents.Count > 1 };
+        combine.Click += async (_, _) =>
+        {
+            active = document;
+            await CreateCombinedTabletAsync();
+        };
+        menu.Items.Add(combine);
 
         menu.Items.Add(new MenuFlyoutSeparator());
         MenuFlyoutItem close = new() { Text = $"Закрыть {document.Document.Name}" };

@@ -1,5 +1,6 @@
 using System.Globalization;
 using AMK.LasViewer.App.Dialogs;
+using AMK.LasViewer.App.Services;
 using AMK.LasViewer.Charting;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
@@ -19,8 +20,9 @@ public sealed partial class LogTablet
 {
     /// <summary>
     /// Ключ свойства перетаскивания внутри приложения. Значение — строка
-    /// «curve|документ|мнемоника» (из дерева проекта) или
-    /// «move|документ|трек|мнемоника» (из шапки трека).
+    /// «curve|файл|мнемоника» (из дерева проекта) или
+    /// «move|планшет|трек|файл|мнемоника» (из шапки трека). Файл — идентификатор
+    /// движка; мнемоника последней, в ней может встретиться «|».
     /// </summary>
     public const string DragPropertyKey = "lasviewer-drag";
 
@@ -30,7 +32,7 @@ public sealed partial class LogTablet
     private static readonly SolidColorBrush DropHighlight = new(Color.FromArgb(0xFF, 0xE3, 0xEE, 0xFB));
 
     private readonly List<Border> headerBorders = [];
-    private readonly List<(TextBlock Text, string Mnemonic)> headerValueTexts = [];
+    private readonly List<(TextBlock Text, CurveStyle Curve)> headerValueTexts = [];
 
     // ------------------------------------------------------------------
     // Шапка
@@ -52,7 +54,11 @@ public sealed partial class LogTablet
             HorizontalAlignment = HorizontalAlignment.Center
         });
         Border depthHeader = HeaderBorder(depthTitle);
-        depthHeader.ContextFlyout = DynamicMenu(menu => menu.Items.Add(Item("Вставить трек", () => InsertTrack(0))));
+        depthHeader.ContextFlyout = DynamicMenu(menu =>
+        {
+            menu.Items.Add(Item("Вставить трек", () => InsertTrack(0)));
+            AddDepthShiftItem(menu);
+        });
         headerBorders.Add(depthHeader);
         headerPanel.Children.Add(depthHeader);
 
@@ -65,10 +71,24 @@ public sealed partial class LogTablet
             {
                 rows.Children.Add(new TextBlock
                 {
-                    Text = "Пустой трек: перетащите сюда кривую из дерева проекта",
+                    Text = "Пустой трек: перетащите сюда кривую из дерева проекта или с другого трека",
                     FontSize = 11,
                     Foreground = MutedTextBrush,
                     TextWrapping = TextWrapping.Wrap
+                });
+            }
+
+            // Совместный планшет: над треком одного файла — имя файла.
+            if (TabletSceneBuilder.TrackCaption(data!, track) is { } caption)
+            {
+                rows.Children.Add(new TextBlock
+                {
+                    Text = caption,
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = MutedTextBrush,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis
                 });
             }
 
@@ -97,7 +117,8 @@ public sealed partial class LogTablet
     {
         SolidColorBrush brush = SceneRenderer.Brush(style.Color);
         TrackScale scale = style.EffectiveScale(track);
-        bool present = data!.Values(style.Mnemonic) is not null;
+        TabletSeries? series = data!.Series(style);
+        bool present = series is not null;
 
         Grid grid = new() { ColumnSpacing = 4 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -120,7 +141,7 @@ public sealed partial class LogTablet
 
         TextBlock name = new()
         {
-            Text = style.Mnemonic + (style.Wrap == WrapMode.Wrap ? " ↻" : string.Empty),
+            Text = TabletSceneBuilder.CurveTitle(data, style, track) + (style.Wrap == WrapMode.Wrap ? " ↻" : string.Empty),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
             Foreground = brush,
@@ -132,9 +153,9 @@ public sealed partial class LogTablet
         TextBlock valueText = new() { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Right };
         Grid.SetColumn(valueText, 2);
         grid.Children.Add(valueText);
-        headerValueTexts.Add((valueText, style.Mnemonic));
+        headerValueTexts.Add((valueText, style));
 
-        string unit = present ? data.Unit(style.Mnemonic) : "нет в файле";
+        string unit = series?.Unit ?? data.MissingReason(style.Source);
         if (present && scale.Kind == ScaleKind.Logarithmic)
         {
             unit = unit.Length > 0 ? unit + ", лог." : "лог.";
@@ -161,17 +182,22 @@ public sealed partial class LogTablet
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             CanDrag = Dialogs is not null
         };
-        ToolTipService.SetToolTip(row, "Двойной щелчок — свойства кривой; перетащите на другой трек, чтобы перенести");
-        row.ContextFlyout = DynamicMenu(menu => PopulateCurveMenu(menu, trackIndex, style.Mnemonic));
+        string file = series?.Source.Name ?? data.Find(style.Source)?.Name ?? string.Empty;
+        ToolTipService.SetToolTip(row, (file.Length > 0 ? $"Файл {file}. " : string.Empty)
+            + "Двойной щелчок — свойства кривой; перетащите на другой трек или на соседний планшет");
+        row.ContextFlyout = DynamicMenu(menu => PopulateCurveMenu(menu, trackIndex, style));
         row.DoubleTapped += async (_, e) =>
         {
             e.Handled = true;
-            await EditCurveAsync(trackIndex, style.Mnemonic);
+            await EditCurveAsync(trackIndex, style);
         };
+        // В перетаскивании — файл кривой, а не «свой»: на чужом планшете
+        // «свой файл» означал бы другой файл.
+        string sourceFile = style.Source ?? data.Own?.Key ?? string.Empty;
         row.DragStarting += (_, e) =>
         {
-            e.Data.Properties[DragPropertyKey] = $"move|{documentKey}|{trackIndex}|{style.Mnemonic}";
-            e.Data.RequestedOperation = DataPackageOperation.Move;
+            e.Data.Properties[DragPropertyKey] = $"move|{documentKey}|{trackIndex}|{sourceFile}|{style.Mnemonic}";
+            e.Data.RequestedOperation = DataPackageOperation.Copy | DataPackageOperation.Move;
         };
         return row;
     }
@@ -183,12 +209,13 @@ public sealed partial class LogTablet
         return block;
     }
 
-    private void UpdateHeaderValues(int row)
+    /// <summary>Значения кривых на глубине курсора — у каждой по её собственной записи.</summary>
+    private void UpdateHeaderValues(double? depth)
     {
-        foreach ((TextBlock text, string mnemonic) in headerValueTexts)
+        foreach ((TextBlock text, CurveStyle curve) in headerValueTexts)
         {
-            double[]? values = data?.Values(mnemonic);
-            text.Text = row >= 0 && values is not null ? FormatValue(values[row]) : string.Empty;
+            TabletSeries? series = data?.Series(curve);
+            text.Text = depth is { } at && series is not null ? FormatValue(series.ValueAt(at)) : string.Empty;
         }
     }
 
@@ -203,32 +230,123 @@ public sealed partial class LogTablet
 
         target.DragOver += (_, e) =>
         {
-            if (ParseDrag(e.DataView) is { } drag && drag.Document == documentKey && Dialogs is not null)
-            {
-                e.AcceptedOperation = drag.FromTrack is null ? DataPackageOperation.Copy : DataPackageOperation.Move;
-                e.DragUIOverride.Caption = drag.FromTrack is null ? $"Добавить {drag.Mnemonic} на трек {trackIndex + 1}" : $"Перенести {drag.Mnemonic} на трек {trackIndex + 1}";
-                SetBackground(target, DropHighlight);
-            }
-        };
-        target.DragLeave += (_, _) => SetBackground(target, original);
-        target.Drop += (_, e) =>
-        {
-            SetBackground(target, original);
-            if (ParseDrag(e.DataView) is not { } drag || drag.Document != documentKey)
+            if (ParseDrag(e.DataView) is not { } drag || Dialogs is null || template is null || data is null)
             {
                 return;
             }
 
-            if (drag.FromTrack is { } from)
+            if (DropRefusal(drag) is { } refusal)
             {
-                MoveCurve(from, drag.Mnemonic, trackIndex);
+                e.AcceptedOperation = DataPackageOperation.None;
+                e.DragUIOverride.Caption = refusal;
+                return;
             }
-            else
+
+            bool move = IsInternalMove(drag);
+            e.AcceptedOperation = move ? DataPackageOperation.Move : DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = move
+                ? $"Перенести {drag.Mnemonic} на трек {trackIndex + 1}"
+                : WouldCreateComparisonTrack(trackIndex, CurveSourceFor(drag.File))
+                    ? $"Новый трек: {drag.Mnemonic} и кривые трека {trackIndex + 1}"
+                    : $"Добавить {drag.Mnemonic} на трек {trackIndex + 1}";
+            SetBackground(target, DropHighlight);
+        };
+        target.DragLeave += (_, _) => SetBackground(target, original);
+        target.Drop += async (_, e) =>
+        {
+            SetBackground(target, original);
+            if (ParseDrag(e.DataView) is not { } drag || template is null || data is null || DropRefusal(drag) is not null)
             {
-                AddCurve(trackIndex, drag.Mnemonic);
+                return;
             }
+
+            if (IsInternalMove(drag))
+            {
+                MoveCurve(drag.FromTrack!.Value, new CurveStyle { Mnemonic = drag.Mnemonic, Source = CurveSourceFor(drag.File) }, trackIndex);
+                return;
+            }
+
+            await DropCurveAsync(drag, trackIndex);
         };
     }
+
+    /// <summary>
+    /// Перенос внутри планшета файла: кривая уходит с прежнего трека. На
+    /// совместном планшете и между планшетами кривая копируется — исходный
+    /// трек остаётся для сравнения.
+    /// </summary>
+    private bool IsInternalMove(DragInfo drag) =>
+        drag.FromTrack is not null && drag.Tablet == documentKey && !data!.IsCombined;
+
+    /// <summary>Почему кривую нельзя положить на этот планшет; <c>null</c> — можно.</summary>
+    private string? DropRefusal(DragInfo drag)
+    {
+        if (data!.IsOwn(drag.File) || data.Find(drag.File) is not null)
+        {
+            return null;
+        }
+
+        if (Host?.FindDocument(drag.File) is not { } document)
+        {
+            return "Файл кривой не открыт";
+        }
+
+        return string.Equals(document.TabletData.IndexUnit.Trim(), data.IndexUnit.Trim(), StringComparison.OrdinalIgnoreCase)
+            ? null
+            : $"Другая единица глубины: {document.TabletData.IndexUnit} и {data.IndexUnit}";
+    }
+
+    /// <summary>Ссылка на файл для кривой этого планшета: <c>null</c> — свой файл.</summary>
+    private string? CurveSourceFor(string file) => data!.IsOwn(file) ? null : file;
+
+    private bool WouldCreateComparisonTrack(int trackIndex, string? source)
+    {
+        string?[] sources = template!.Tracks[trackIndex].Curves.Select(curve => curve.Source).Distinct().ToArray();
+        return sources.Length == 1 && sources[0] != source;
+    }
+
+    /// <summary>
+    /// Кривая из дерева проекта, с другого трека совместного планшета или с
+    /// соседнего планшета. Кривая другого файла ложится на трек сравнения
+    /// (см. <see cref="TemplateEditing.PlaceCurve"/>).
+    /// </summary>
+    private async Task DropCurveAsync(DragInfo drag, int trackIndex)
+    {
+        string? source = CurveSourceFor(drag.File);
+        if (source is not null && data!.Find(source) is null)
+        {
+            // Файл ещё не участвует в планшете: проверить единицу глубины и
+            // скважину, а совместному планшету — добавить файл.
+            if (Host?.FindDocument(source) is not { } document || content is null || !await Host.AcceptSourceAsync(content, document))
+            {
+                return;
+            }
+
+            data = Host.SourcesFor(content);
+        }
+
+        if (template is null || data!.Series(source, drag.Mnemonic) is null)
+        {
+            return;
+        }
+
+        CurveStyle curve = new() { Mnemonic = drag.Mnemonic, Source = source };
+        // С другого трека этого же планшета кривая приходит со своим видом и шкалой.
+        if (drag.Tablet == documentKey && drag.FromTrack is { } from && from < template.Tracks.Count
+            && template.Tracks[from].Curves.FirstOrDefault(existing => TemplateEditing.SameCurve(existing, curve)) is { } original)
+        {
+            curve = original.Clone();
+            curve.Scale = original.EffectiveScale(template.Tracks[from]);
+        }
+
+        if (TemplateEditing.PlaceCurve(template, trackIndex, curve, () => SuggestScale(source, drag.Mnemonic)) >= 0)
+        {
+            AfterEdit();
+        }
+    }
+
+    private TrackScale SuggestScale(string? source, string mnemonic) =>
+        data!.Find(source) is { } file ? DefaultTemplateBuilder.SuggestScale(file.Data, mnemonic) : TrackScale.Linear(0, 100);
 
     private static void SetBackground(FrameworkElement element, Brush? brush)
     {
@@ -243,7 +361,9 @@ public sealed partial class LogTablet
         }
     }
 
-    private sealed record DragInfo(string Document, string Mnemonic, int? FromTrack);
+    /// <param name="Tablet">Планшет, с которого тянут кривую; <c>null</c> — из дерева проекта.</param>
+    /// <param name="File">Файл кривой — идентификатор движка.</param>
+    private sealed record DragInfo(string? Tablet, string File, string Mnemonic, int? FromTrack);
 
     private static DragInfo? ParseDrag(DataPackageView view)
     {
@@ -252,13 +372,19 @@ public sealed partial class LogTablet
             return null;
         }
 
-        string[] parts = text.Split('|');
-        return parts switch
+        if (text.StartsWith("curve|", StringComparison.Ordinal))
         {
-            ["curve", var document, var mnemonic] => new DragInfo(document, mnemonic, null),
-            ["move", var document, var track, var mnemonic] when int.TryParse(track, out int from) => new DragInfo(document, mnemonic, from),
-            _ => null
-        };
+            string[] parts = text.Split('|', 3);
+            return parts.Length == 3 ? new DragInfo(null, parts[1], parts[2], null) : null;
+        }
+
+        if (text.StartsWith("move|", StringComparison.Ordinal))
+        {
+            string[] parts = text.Split('|', 5);
+            return parts.Length == 5 && int.TryParse(parts[2], out int from) ? new DragInfo(parts[1], parts[3], parts[4], from) : null;
+        }
+
+        return null;
     }
 
     // ------------------------------------------------------------------
@@ -287,23 +413,35 @@ public sealed partial class LogTablet
         TrackDefinition track = template!.Tracks[trackIndex];
         menu.Items.Add(Item($"Свойства трека {trackIndex + 1}…", async () => await EditTrackAsync(trackIndex)));
 
+        // Кривые файлов планшета; если файлов несколько — по подменю на файл.
         MenuFlyoutSubItem add = new() { Text = "Добавить кривую" };
-        foreach (string mnemonic in data!.Mnemonics)
+        foreach (TabletSource file in data!.All)
         {
-            if (track.Curves.Any(curve => curve.Mnemonic == mnemonic))
+            MenuFlyoutSubItem target = add;
+            if (data.All.Count > 1)
             {
-                continue;
+                target = new MenuFlyoutSubItem { Text = file.Name };
+                add.Items.Add(target);
             }
 
-            int elsewhere = template.Tracks.FindIndex(other => other.Curves.Any(curve => curve.Mnemonic == mnemonic));
-            string unit = data.Unit(mnemonic);
-            string text = (unit.Length > 0 ? $"{mnemonic}, {unit}" : mnemonic) + (elsewhere >= 0 ? $"  (на треке {elsewhere + 1})" : string.Empty);
-            add.Items.Add(Item(text, () => AddCurve(trackIndex, mnemonic)));
-        }
+            string? source = CurveSourceFor(file.Key);
+            foreach (string mnemonic in file.Data.Mnemonics)
+            {
+                if (track.Curves.Any(curve => curve.Mnemonic == mnemonic && curve.Source == source))
+                {
+                    continue;
+                }
 
-        if (add.Items.Count == 0)
-        {
-            add.Items.Add(new MenuFlyoutItem { Text = "Все кривые файла уже на треке", IsEnabled = false });
+                int elsewhere = template.Tracks.FindIndex(other => other.Curves.Any(curve => curve.Mnemonic == mnemonic && curve.Source == source));
+                string unit = file.Data.Unit(mnemonic);
+                string text = (unit.Length > 0 ? $"{mnemonic}, {unit}" : mnemonic) + (elsewhere >= 0 ? $"  (на треке {elsewhere + 1})" : string.Empty);
+                target.Items.Add(Item(text, () => AddCurve(trackIndex, source, mnemonic)));
+            }
+
+            if (target.Items.Count == 0)
+            {
+                target.Items.Add(new MenuFlyoutItem { Text = "Все кривые файла уже на треке", IsEnabled = false });
+            }
         }
 
         menu.Items.Add(add);
@@ -333,11 +471,23 @@ public sealed partial class LogTablet
         menu.Items.Add(Item("Вставить трек слева", () => InsertTrack(trackIndex)));
         menu.Items.Add(Item("Вставить трек справа", () => InsertTrack(trackIndex + 1)));
         menu.Items.Add(Item("Удалить трек", async () => await DeleteTrackAsync(trackIndex)));
+        AddDepthShiftItem(menu);
     }
 
-    private void PopulateCurveMenu(MenuFlyout menu, int trackIndex, string mnemonic)
+    /// <summary>У совместного планшета — сдвиг файлов по глубине (увязка при показе).</summary>
+    private void AddDepthShiftItem(MenuFlyout menu)
     {
-        menu.Items.Add(Item($"Свойства кривой {mnemonic}…", async () => await EditCurveAsync(trackIndex, mnemonic)));
+        if (content is CombinedTablet combined && Host is not null)
+        {
+            menu.Items.Add(new MenuFlyoutSeparator());
+            menu.Items.Add(Item("Сдвиг файлов по глубине…", async () => await Host.EditDepthShiftsAsync(combined)));
+        }
+    }
+
+    private void PopulateCurveMenu(MenuFlyout menu, int trackIndex, CurveStyle style)
+    {
+        string mnemonic = style.Mnemonic;
+        menu.Items.Add(Item($"Свойства кривой {mnemonic}…", async () => await EditCurveAsync(trackIndex, style)));
 
         MenuFlyoutSubItem move = new() { Text = "Перенести на трек" };
         for (int index = 0; index < template!.Tracks.Count; index++)
@@ -349,17 +499,17 @@ public sealed partial class LogTablet
 
             int target = index;
             string curves = string.Join(", ", template.Tracks[index].Curves.Take(3).Select(curve => curve.Mnemonic));
-            move.Items.Add(Item($"Трек {index + 1}{(curves.Length > 0 ? ": " + curves : " (пустой)")}", () => MoveCurve(trackIndex, mnemonic, target)));
+            move.Items.Add(Item($"Трек {index + 1}{(curves.Length > 0 ? ": " + curves : " (пустой)")}", () => MoveCurve(trackIndex, style, target)));
         }
 
         move.Items.Add(new MenuFlyoutSeparator());
         move.Items.Add(Item("Новый трек справа", () =>
         {
             InsertTrack(trackIndex + 1, notify: false);
-            MoveCurve(trackIndex, mnemonic, trackIndex + 1);
+            MoveCurve(trackIndex, style, trackIndex + 1);
         }));
         menu.Items.Add(move);
-        menu.Items.Add(Item("Убрать с трека", () => RemoveCurve(trackIndex, mnemonic)));
+        menu.Items.Add(Item("Убрать с трека", () => RemoveCurve(trackIndex, style)));
 
         // Шапка трека целиком занята строками кривых, поэтому команды трека
         // доступны и отсюда — иначе до них не дотянуться.
@@ -392,27 +542,28 @@ public sealed partial class LogTablet
         Edited?.Invoke(this, EventArgs.Empty);
     }
 
-    private void AddCurve(int trackIndex, string mnemonic)
+    /// <summary>
+    /// Кривая из меню трека. В пустой трек она приходит со своей шкалой по
+    /// данным — иначе легла бы на условную шкалу пустого трека.
+    /// </summary>
+    private void AddCurve(int trackIndex, string? source, string mnemonic)
     {
-        TrackDefinition track = template!.Tracks[trackIndex];
-        if (track.Curves.Any(curve => curve.Mnemonic == mnemonic) || data!.Values(mnemonic) is null)
+        if (data!.Series(source, mnemonic) is null)
         {
             return;
         }
 
-        // В пустой трек кривая приходит со своей шкалой по данным — иначе она
-        // легла бы на условную шкалу пустого трека.
-        if (track.Curves.Count == 0)
+        CurveStyle curve = new() { Mnemonic = mnemonic, Source = source };
+        if (TemplateEditing.PlaceCurve(template!, trackIndex, curve, () => SuggestScale(source, mnemonic)) >= 0)
         {
-            track.Scale = DefaultTemplateBuilder.SuggestScale(data, mnemonic);
+            AfterEdit();
         }
-
-        track.Curves.Add(new CurveStyle { Mnemonic = mnemonic, Color = CurvePalette.ForPosition(track.Curves.Count) });
-        AfterEdit();
     }
 
-    private void MoveCurve(int fromTrack, string mnemonic, int toTrack)
+    /// <param name="key">Кривая: мнемоника и файл (<see cref="CurveStyle.Source"/>).</param>
+    private void MoveCurve(int fromTrack, CurveStyle key, int toTrack)
     {
+        string mnemonic = key.Mnemonic;
         if (fromTrack == toTrack || fromTrack >= template!.Tracks.Count || toTrack >= template.Tracks.Count)
         {
             return;
@@ -420,14 +571,14 @@ public sealed partial class LogTablet
 
         TrackDefinition source = template.Tracks[fromTrack];
         TrackDefinition target = template.Tracks[toTrack];
-        CurveStyle? style = source.Curves.FirstOrDefault(curve => curve.Mnemonic == mnemonic);
-        if (style is null || target.Curves.Any(curve => curve.Mnemonic == mnemonic))
+        CurveStyle? style = source.Curves.FirstOrDefault(curve => TemplateEditing.SameCurve(curve, key));
+        if (style is null || target.Curves.Any(curve => TemplateEditing.SameCurve(curve, key)))
         {
             return;
         }
 
         source.Curves.Remove(style);
-        source.Fills.RemoveAll(fill => fill.Curve == mnemonic || fill.OtherCurve == mnemonic);
+        source.Fills.RemoveAll(fill => fill.Source == key.Source && (fill.Curve == mnemonic || fill.OtherCurve == mnemonic));
         if (target.Curves.Count == 0)
         {
             target.Scale = style.EffectiveScale(source);
@@ -443,11 +594,11 @@ public sealed partial class LogTablet
         AfterEdit();
     }
 
-    private void RemoveCurve(int trackIndex, string mnemonic)
+    private void RemoveCurve(int trackIndex, CurveStyle key)
     {
         TrackDefinition track = template!.Tracks[trackIndex];
-        track.Curves.RemoveAll(curve => curve.Mnemonic == mnemonic);
-        track.Fills.RemoveAll(fill => fill.Curve == mnemonic || fill.OtherCurve == mnemonic);
+        track.Curves.RemoveAll(curve => TemplateEditing.SameCurve(curve, key));
+        track.Fills.RemoveAll(fill => fill.Source == key.Source && (fill.Curve == key.Mnemonic || fill.OtherCurve == key.Mnemonic));
         AfterEdit();
     }
 
@@ -501,7 +652,7 @@ public sealed partial class LogTablet
         AfterEdit();
     }
 
-    private async Task EditCurveAsync(int trackIndex, string mnemonic)
+    private async Task EditCurveAsync(int trackIndex, CurveStyle key)
     {
         if (Dialogs is null)
         {
@@ -509,13 +660,13 @@ public sealed partial class LogTablet
         }
 
         TrackDefinition track = template!.Tracks[trackIndex];
-        int position = track.Curves.FindIndex(curve => curve.Mnemonic == mnemonic);
+        int position = track.Curves.FindIndex(curve => TemplateEditing.SameCurve(curve, key));
         if (position < 0)
         {
             return;
         }
 
-        CurveStyle? edited = await TabletDialogs.EditCurveAsync(Dialogs, track.Curves[position], track, data!.Unit(mnemonic));
+        CurveStyle? edited = await TabletDialogs.EditCurveAsync(Dialogs, track.Curves[position], track, data!.Series(key)?.Unit ?? string.Empty);
         if (edited is null)
         {
             return;
@@ -528,7 +679,9 @@ public sealed partial class LogTablet
     private async Task EditFillAsync(int trackIndex, FillDefinition? existing)
     {
         TrackDefinition track = template!.Tracks[trackIndex];
-        FillDefinition? edited = await TabletDialogs.EditFillAsync(Dialogs!, track, existing);
+        // В списке заливки файл указан у каждой кривой: заливка строится только по кривым одного файла.
+        FillDefinition? edited = await TabletDialogs.EditFillAsync(
+            Dialogs!, track, existing, curve => data!.Label(curve.Source) is { } file ? $"{curve.Mnemonic} · {file}" : curve.Mnemonic);
         if (edited is null)
         {
             return;
