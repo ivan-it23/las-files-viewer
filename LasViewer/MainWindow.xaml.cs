@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using AMK.LasViewer.App.Services;
 using AMK.LasViewer.Core;
 using AMK.LasViewer.Engine;
@@ -388,8 +389,36 @@ public sealed partial class MainWindow : Window
         ProjectTitle.Text = $"Проект: {project.DisplayName}{dirty}";
     }
 
+    /// <summary>Состав дерева, по которому оно было построено в последний раз.</summary>
+    private string? treeSignature;
+
+    /// <summary>
+    /// Обновляет дерево проекта. Узлы создаются заново, только если изменился
+    /// состав: файлы, кривые или пометки. При смене активного файла меняются
+    /// лишь выделение и раскрытие — так дерево не теряет прокрутку и не
+    /// пересобирается на каждый щелчок.
+    /// </summary>
     private void RebuildProjectTree()
     {
+        string signature = TreeSignature();
+        if (signature == treeSignature)
+        {
+            TreeViewNode? selected = null;
+            foreach (TreeViewNode node in ProjectTree.RootNodes)
+            {
+                bool isActive = node.Content is ProjectItem { } item && item.Document == active;
+                node.IsExpanded = isActive;
+                if (isActive)
+                {
+                    selected = node;
+                }
+            }
+
+            ProjectTree.SelectedNode = selected;
+            return;
+        }
+
+        treeSignature = signature;
         ProjectTree.RootNodes.Clear();
         TreeViewNode? activeNode = null;
         foreach (OpenedDocument document in project.Documents)
@@ -437,9 +466,51 @@ public sealed partial class MainWindow : Window
             (name.Length > 0 ? name + " " : string.Empty) + depth.ToString("0.##", CultureInfo.CurrentCulture);
     }
 
+    private string TreeSignature()
+    {
+        StringBuilder signature = new();
+        foreach (OpenedDocument document in project.Documents)
+        {
+            signature.Append(document.Document.FileId).Append('|');
+            foreach (LasCurve curve in document.Document.DataCurves)
+            {
+                signature.Append(curve.Mnemonic).Append(',');
+            }
+
+            foreach (Charting.DepthMarker marker in document.Annotations.Markers)
+            {
+                signature.Append('m').Append(marker.Depth.ToString("R", CultureInfo.InvariantCulture)).Append(marker.Name).Append(',');
+            }
+
+            foreach (Charting.DepthInterval interval in document.Annotations.Intervals)
+            {
+                signature.Append('i').Append(interval.Top.ToString("R", CultureInfo.InvariantCulture))
+                    .Append('-').Append(interval.Bottom.ToString("R", CultureInfo.InvariantCulture)).Append(interval.Name).Append(',');
+            }
+
+            signature.Append(';');
+        }
+
+        return signature.ToString();
+    }
+
     private void ProjectTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
     {
         if (args.InvokedItem is not TreeViewNode { Content: ProjectItem item })
+        {
+            return;
+        }
+
+        // Переключение файла меняет узлы дерева. Делать это внутри события
+        // самого дерева нельзя: TreeView ещё обрабатывает щелчок по узлу, и
+        // при многократном переключении процесс падал с повреждением кучи
+        // (0xc0000374 в ntdll) без управляемого исключения.
+        DispatcherQueue.TryEnqueue(() => OpenTreeItem(item));
+    }
+
+    private void OpenTreeItem(ProjectItem item)
+    {
+        if (!project.Documents.Contains(item.Document))
         {
             return;
         }
