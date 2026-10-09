@@ -10,7 +10,9 @@
   `__version__` движка обязан с ней совпадать (сверяет `scripts/Build-Installer.ps1`).
 
 План работ и список функций — [`docs/PLAN.md`](docs/PLAN.md), устройство —
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), состояние работ и что дальше —
+[`docs/STATUS.md`](docs/STATUS.md), формат LAS компании и программа GORIZONT —
+[`docs/DOMAIN.md`](docs/DOMAIN.md).
 
 ## Состав
 
