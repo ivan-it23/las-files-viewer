@@ -47,6 +47,12 @@ public sealed class AgentSession
     /// <summary>Сколько раз подряд шаг восстанавливается после обрыва связи, прежде чем вопрос считается неудачным.</summary>
     public const int MaxRecoveries = 2;
 
+    /// <summary>Сколько раз повторяется запрос, когда провайдер модели ограничил частоту.</summary>
+    public const int MaxBusyRetries = 2;
+
+    /// <summary>Пауза перед повтором при перегрузке провайдера; растёт с каждым повтором. Изменяется проверками.</summary>
+    public static TimeSpan BusyRetryDelay { get; set; } = TimeSpan.FromSeconds(4);
+
     private const string ContinueNote =
         "Ответ оборвался из-за сбоя связи. Продолжите ровно с того места, где он прервался, "
         + "не повторяя уже написанное и без вступлений.";
@@ -188,10 +194,25 @@ public sealed class AgentSession
     {
         string received = string.Empty;
         List<ChatMessage> current = request;
+        int busyRetries = 0;
         for (int failures = 0; ; failures++)
         {
-            ChatCompletion part = await client.CompleteAsync(
-                model, current, toolList, allowTools, observer.TextDelta, cancellationToken).ConfigureAwait(false);
+            ChatCompletion part;
+            try
+            {
+                part = await client.CompleteAsync(
+                    model, current, toolList, allowTools, observer.TextDelta, cancellationToken).ConfigureAwait(false);
+            }
+            catch (LlmProxyException exception) when (exception.Code == "provider_busy" && busyRetries < MaxBusyRetries)
+            {
+                // Провайдер модели ограничил частоту запросов — обычно на
+                // несколько секунд. Повтор с паузой, затем — ошибка как есть.
+                busyRetries++;
+                failures--;
+                observer.Notice("Провайдер модели перегружен — повторяю запрос через несколько секунд…");
+                await Task.Delay(BusyRetryDelay * busyRetries, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
             if (part.Usage is { } usage)
             {
                 SpentRub += usage.CostRub;

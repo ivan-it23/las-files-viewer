@@ -74,6 +74,20 @@ class AgentToolTests(unittest.TestCase):
             self.assertEqual(tool["function"]["parameters"]["type"], "object")
         json.dumps(tools, allow_nan=False)
 
+    def test_no_empty_objects_in_tool_schemas(self):
+        # Пустой объект JSON превращается в пустой массив в PHP-посреднике
+        # старой версии, и Claude (Amazon Bedrock) отвергает такой запрос.
+        def walk(node, path):
+            if isinstance(node, dict):
+                self.assertTrue(node, f"пустой объект в {path}")
+                for key, value in node.items():
+                    walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{path}[{index}]")
+
+        walk(self.server.methods["agent.tools"](), "tools")
+
     def test_list_and_info(self):
         files = call(self.server, "list_files")["result"]["files"]
         self.assertEqual(files[0]["file_id"], "f1")

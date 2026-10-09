@@ -247,7 +247,10 @@ public sealed class LlmProxyClient : IDisposable
 
             if (chunk.TryGetProperty("error", out JsonElement error) && error.ValueKind == JsonValueKind.Object)
             {
-                throw new LlmProxyException("upstream_error", Text(error, "message") is { Length: > 0 } text ? text : "Сервис моделей вернул ошибку.");
+                string message = Text(error, "message") is { Length: > 0 } text ? text : "Сервис моделей вернул ошибку.";
+                // Провайдер модели перегружен — временно; сессия повторит запрос.
+                string code = Text(error, "code") is "TOO_MANY_REQUESTS" or "RATE_LIMITED" ? "provider_busy" : "upstream_error";
+                throw new LlmProxyException(code, message);
             }
 
             if (chunk.TryGetProperty("usage", out JsonElement usageElement) && usageElement.ValueKind == JsonValueKind.Object)

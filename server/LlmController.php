@@ -146,12 +146,17 @@ function actionChat(): void
         fail('too_large', 'Запрос больше 2 МБ. Начните новый диалог.', 413);
     }
 
+    // Два разбора: массивом — для проверок, объектами — для передачи сервису.
+    // При разборе массивом пустой объект {} превращается в [] и уходит
+    // сервису искажённым; Claude (Amazon Bedrock) отвергает такую схему
+    // инструмента ответом «Некорректный запрос».
     $request = json_decode($raw, true);
-    if (!is_array($request)) {
+    $original = json_decode($raw);
+    if (!is_array($request) || !is_object($original)) {
         fail('bad_request', 'Тело запроса — не JSON-объект.', 400);
     }
 
-    $payload = buildPayload($request);
+    $payload = buildPayload($request, $original);
 
     // Лимиты проверяются и счётчик увеличивается под одной блокировкой:
     // два одновременных запроса не проскочат последний свободный слот.
@@ -191,7 +196,7 @@ function actionChat(): void
  * отбрасываются: программа не может подменить адрес или включить у сервиса
  * что-то сверх перечисленного.
  */
-function buildPayload(array $request): array
+function buildPayload(array $request, stdClass $original): array
 {
     $model = isset($request['model']) && is_string($request['model']) && $request['model'] !== ''
         ? $request['model']
@@ -201,7 +206,7 @@ function buildPayload(array $request): array
     }
 
     $messages = $request['messages'] ?? null;
-    if (!is_array($messages) || count($messages) === 0) {
+    if (!is_array($messages) || count($messages) === 0 || !is_array($original->messages ?? null)) {
         fail('bad_request', 'Нет сообщений диалога.', 400);
     }
     if (count($messages) > MAX_MESSAGES) {
@@ -214,15 +219,17 @@ function buildPayload(array $request): array
         }
     }
 
-    $payload = ['model' => $model, 'messages' => array_values($messages), 'stream' => true];
+    // Сообщения и инструменты уходят сервису в исходном виде (объектами),
+    // проверены — по разбору массивом.
+    $payload = ['model' => $model, 'messages' => $original->messages, 'stream' => true];
 
     if (isset($request['tools'])) {
-        if (!is_array($request['tools']) || count($request['tools']) > MAX_TOOLS) {
+        if (!is_array($request['tools']) || count($request['tools']) > MAX_TOOLS || !is_array($original->tools)) {
             fail('bad_request', 'Неверный список инструментов.', 400);
         }
-        $payload['tools'] = array_values($request['tools']);
+        $payload['tools'] = $original->tools;
         if (isset($request['tool_choice'])) {
-            $payload['tool_choice'] = $request['tool_choice'];
+            $payload['tool_choice'] = $original->tool_choice;
         }
     }
 

@@ -52,7 +52,19 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "list_files",
             "description": "Список открытых в программе LAS-файлов: идентификатор, имя, интервал глубин, шаг, кривые с единицами.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            # Параметр нужен не только по смыслу: схема с пустым "properties"
+            # ломалась по пути к Claude (Amazon Bedrock отвечал «Некорректный
+            # запрос»), поэтому пустых объектов в описаниях инструментов нет.
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_curves": {
+                        "type": "boolean",
+                        "description": "Включить список кривых каждого файла. По умолчанию — да.",
+                    },
+                },
+                "additionalProperties": False,
+            },
         },
     },
     {
@@ -186,7 +198,7 @@ TOOLS: list[dict[str, Any]] = [
 
 def register(server: Server, workspace: Workspace) -> None:
     handlers: dict[str, Callable[..., Any]] = {
-        "list_files": lambda: list_files(workspace),
+        "list_files": lambda include_curves=True: list_files(workspace, include_curves),
         "get_file_info": lambda file_id: get_file_info(workspace, file_id),
         "curve_stats": lambda file_id, curves, top=None, bottom=None: curve_stats(
             _file(workspace, file_id), curves, top, bottom),
@@ -227,17 +239,19 @@ def register(server: Server, workspace: Workspace) -> None:
 # ----------------------------------------------------------------------
 
 
-def list_files(workspace: Workspace) -> dict[str, Any]:
+def list_files(workspace: Workspace, include_curves: Any = True) -> dict[str, Any]:
     files = []
     for file_id, las in workspace.files.items():
         index = index_summary(las)
-        files.append({
+        entry: dict[str, Any] = {
             "file_id": file_id,
             "name": Path(las.source).name,
             "depth": {"unit": index["unit"], "start": index["start"], "stop": index["stop"], "step": index["step"]},
             "rows": las.row_count,
-            "curves": [_curve_brief(curve) for curve in las.curves[1:]],
-        })
+        }
+        if include_curves is not False:
+            entry["curves"] = [_curve_brief(curve) for curve in las.curves[1:]]
+        files.append(entry)
     return {"files": files}
 
 

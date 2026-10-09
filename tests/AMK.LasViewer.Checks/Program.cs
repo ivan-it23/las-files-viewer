@@ -566,6 +566,17 @@ await CheckAsync("агент: оборванный поток — продолж
     Equal(await new AgentSession().AskAsync("?", string.Empty, retryClient, null, new FakeTools(), retryObserver, CancellationToken.None), "Готово");
     True(retryObserver.Events[0].StartsWith("notice ", StringComparison.Ordinal), "нет сообщения о повторе");
 
+    // Провайдер модели ограничил частоту запросов — повтор после паузы.
+    AgentSession.BusyRetryDelay = TimeSpan.FromMilliseconds(10);
+    int busy = 0;
+    using FakeProxy throttled = new((_, _) => ++busy == 1
+        ? FakeProxy.Sse("data: {\"error\":{\"code\":\"TOO_MANY_REQUESTS\",\"message\":\"Провайдер модели ограничил частоту запросов.\"}}")
+        : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Есть\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
+    using LlmProxyClient throttledClient = new("amk-horizon.ru", null, throttled);
+    RecordingObserver busyObserver = new();
+    Equal(await new AgentSession().AskAsync("?", string.Empty, throttledClient, null, new FakeTools(), busyObserver, CancellationToken.None), "Есть");
+    True(busyObserver.Events[0].Contains("перегружен"), "нет сообщения о перегрузке провайдера");
+
     // Обрывы подряд — понятная ошибка, история чистая.
     using FakeProxy always = new((_, _) => FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"…\"}}]}"));
     using LlmProxyClient failing = new("amk-horizon.ru", null, always);
