@@ -6,7 +6,7 @@ import logging
 import sys
 from typing import BinaryIO
 
-from . import agent_tools, las_methods, system_methods
+from . import agent_tools, las_methods, scripts, system_methods
 from .rpc import Server
 
 
@@ -44,5 +44,6 @@ def serve(reader: BinaryIO, writer: BinaryIO) -> int:
     system_methods.register(server)
     workspace = las_methods.register(server)
     agent_tools.register(server, workspace)
+    scripts.register(server, workspace)
     logging.getLogger(__name__).info("Движок запущен, ожидаю запросы")
     return server.serve_forever()

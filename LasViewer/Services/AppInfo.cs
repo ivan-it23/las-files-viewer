@@ -25,6 +25,9 @@ internal static class AppInfo
 
     public static string LogDirectory { get; } = Path.Combine(DataDirectory, "logs");
 
+    /// <summary>Скрипты агента: папка на каждый запуск с кодом, графиками и таблицами.</summary>
+    public static string ScriptsDirectory { get; } = Path.Combine(DataDirectory, "scripts");
+
     public static string Format(Version version)
     {
         return $"{version.Major}.{Math.Max(0, version.Minor)}.{Math.Max(0, version.Build)}";

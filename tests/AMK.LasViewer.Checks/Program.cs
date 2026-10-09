@@ -702,6 +702,68 @@ await CheckAsync("агент: инструменты движка через JSO
     }
 });
 
+await CheckAsync("агент: скрипт Python — подтверждение, отказ, запуск в движке", async () =>
+{
+    string path = Path.Combine(Path.GetTempPath(), "lasviewer-script-check-" + Guid.NewGuid().ToString("N") + ".las");
+    string scripts = Path.Combine(Path.GetTempPath(), "lasviewer-script-runs-" + Guid.NewGuid().ToString("N"));
+    File.WriteAllText(path, string.Join("\n",
+        "~V", "VERS. 2.0 :", "WRAP. NO :", "~W", "NULL. -999.25 :", "~C", "DEPT.M :", "RO.OHMM : сопротивление", "~A",
+        "100.0 5", "100.1 7", "100.2 -999.25", "100.3 9"));
+    try
+    {
+        await using EngineHost engine = new(AppContext.BaseDirectory, "checks");
+        True(await engine.StartAsync(CancellationToken.None), engine.LastError ?? "движок не запустился");
+        LasDocument document = await engine.OpenLasAsync(path, CancellationToken.None);
+
+        // Без подтверждения скрипт модели даже не предлагается.
+        System.Text.Json.Nodes.JsonArray readOnly = await new EngineAgentTools(engine).GetToolsAsync(CancellationToken.None);
+        True(readOnly.All(tool => tool!["function"]!["name"]!.GetValue<string>() != EngineAgentTools.ScriptToolName), "run_python без подтверждения");
+
+        string arguments = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["title"] = "Среднее RO",
+            ["code"] = "print('среднее', round(float(df['RO'].mean()), 3))\nplt.plot(df['RO'], df.index)\n",
+            ["timeout_seconds"] = 30
+        });
+
+        FakeApprover reject = new(false);
+        EngineAgentTools rejecting = new(engine, reject, scripts);
+        True((await rejecting.GetToolsAsync(CancellationToken.None)).Any(tool => tool!["function"]!["name"]!.GetValue<string>() == EngineAgentTools.ScriptToolName), "нет run_python");
+        ToolResult rejected = await rejecting.CallAsync(EngineAgentTools.ScriptToolName, arguments, CancellationToken.None);
+        True(!rejected.Ok && rejected.Error == EngineAgentTools.ScriptRejected, rejected.Json);
+        Equal(reject.Requests.Single().Title, "Среднее RO");
+        Same(reject.Requests.Single().FileNames, [Path.GetFileName(path)]);
+        Equal(reject.Requests.Single().TimeoutSeconds, 30);
+        True(!Directory.Exists(scripts), "отклонённый скрипт создал папку запуска");
+
+        ToolResult unknown = await new EngineAgentTools(engine, new FakeApprover(true), scripts).CallAsync(
+            EngineAgentTools.ScriptToolName, "{\"title\":\"x\",\"code\":\"print(1)\",\"file_ids\":[\"нет\"]}", CancellationToken.None);
+        True(!unknown.Ok && unknown.Error!.Contains("не открыты"), unknown.Json);
+
+        ToolResult ran = await new EngineAgentTools(engine, new FakeApprover(true), scripts).CallAsync(
+            EngineAgentTools.ScriptToolName, arguments, CancellationToken.None);
+        if (!ran.Ok && ran.Error!.Contains("Не установлены пакеты"))
+        {
+            throw new SkipException("у Python разработчика нет numpy/pandas/matplotlib");
+        }
+
+        True(ran.Ok, ran.Error ?? ran.Json);
+        System.Text.Json.Nodes.JsonNode report = System.Text.Json.Nodes.JsonNode.Parse(ran.Json)!["result"]!;
+        True(report["output"]!.GetValue<string>().Contains("среднее 7.0"), report.ToJsonString());
+        string figure = report["figures"]![0]!["path"]!.GetValue<string>();
+        True(File.Exists(figure) && figure.StartsWith(scripts, StringComparison.OrdinalIgnoreCase), figure);
+        _ = document;
+    }
+    finally
+    {
+        File.Delete(path);
+        if (Directory.Exists(scripts))
+        {
+            Directory.Delete(scripts, true);
+        }
+    }
+});
+
 Console.WriteLine(failures == 0
     ? $"Все проверки пройдены{(skipped > 0 ? $", пропущено: {skipped}" : string.Empty)}."
     : $"Не пройдено проверок: {failures}.");
@@ -851,6 +913,17 @@ internal sealed class FakeTools : IAgentToolExecutor
     }
 }
 
+internal sealed class FakeApprover(bool answer) : IScriptApprover
+{
+    public List<ScriptRequest> Requests { get; } = [];
+
+    public Task<bool> ApproveAsync(ScriptRequest request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request);
+        return Task.FromResult(answer);
+    }
+}
+
 internal sealed class RecordingObserver : IAgentObserver
 {
     public List<string> Events { get; } = [];
@@ -859,7 +932,7 @@ internal sealed class RecordingObserver : IAgentObserver
 
     public void ToolStarted(ToolCall call) => Events.Add("tool+ " + call.Name);
 
-    public void ToolFinished(ToolCall call, bool ok, string summary) => Events.Add((ok ? "tool✓ " : "tool✗ ") + call.Name);
+    public void ToolFinished(ToolCall call, ToolResult result) => Events.Add((result.Ok ? "tool✓ " : "tool✗ ") + call.Name);
 
     public void StepFinished(ChatUsage? usage)
     {

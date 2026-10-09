@@ -28,6 +28,10 @@ DEFAULT_SAMPLE_POINTS = 150
 MAX_INTERVALS = 200
 MAX_CURVES_PER_CALL = 12
 
+# Скрипт запускает приложение после подтверждения пользователем
+# (agent.run_script в scripts.py), а не agent.call.
+RUN_PYTHON = "run_python"
+
 
 class ToolError(Exception):
     """Ошибка в аргументах или данных — описание уходит модели."""
@@ -188,6 +192,53 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": RUN_PYTHON,
+            "description": (
+                "Выполняет скрипт Python на компьютере пользователя над данными открытых файлов: расчёты, которых "
+                "нет в других инструментах, графики, диаграммы, кросс-плоты, гистограммы и таблицы для отчёта. "
+                "Перед запуском пользователь видит код и подтверждает его — пишите понятный короткий код с "
+                "комментариями по-русски. Для простой статистики, поиска интервалов и сравнения двух кривых "
+                "используйте другие инструменты: они быстрее и не требуют подтверждения.\n"
+                "В скрипте уже есть: np (numpy), pd (pandas), plt (matplotlib, без окон); files — словарь "
+                "file_id → файл; las — основной файл (file_id или первый из переданных); df — его таблица "
+                "pandas.DataFrame: индекс — глубина, столбцы — кривые с мнемониками как в файле, пропуски — NaN. "
+                "У файла: name, depth (numpy), depth_unit, curves (мнемоника → numpy), units, descriptions, "
+                "well (поля ~Well), df, interval(top, bottom) → DataFrame, curve(имя) без учёта регистра.\n"
+                "save_figure(\"имя\", fig=None) сохраняет график PNG (несохранённые фигуры сохраняются сами); "
+                "save_table(таблица, \"имя\") — CSV для Excel. Подписи на графиках — по-русски, с единицами; "
+                "глубина на вертикальной оси сверху вниз (ax.invert_yaxis()).\n"
+                "Вам возвращается то, что скрипт напечатал print (до 12 000 символов), и список файлов. Графики "
+                "видит только пользователь, вы — нет: печатайте числа, на которых строите выводы. Сети нет, "
+                "запускать программы и писать вне папки результатов нельзя; LAS-файлы скрипт не меняет. "
+                "При ошибке вернётся трассировка — исправьте код и запустите снова."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Что делает скрипт, в нескольких словах — увидит пользователь, это же имя папки результатов.",
+                    },
+                    "code": {"type": "string", "description": "Код Python 3.12."},
+                    "file_id": {**_FILE_ID, "description": "Основной файл — переменные las и df. По умолчанию первый из file_ids."},
+                    "file_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Какие открытые файлы передать скрипту. По умолчанию — все.",
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Сколько секунд скрипт может работать: от 5 до 300, по умолчанию 60.",
+                    },
+                },
+                "required": ["title", "code"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -214,6 +265,8 @@ def register(server: Server, workspace: Workspace) -> None:
         return TOOLS
 
     def call(name: str, arguments: Any = None) -> dict[str, Any]:
+        if name == RUN_PYTHON:
+            return {"ok": False, "error": "Скрипт запускается только программой после подтверждения пользователем."}
         handler = handlers.get(name)
         if handler is None:
             return {"ok": False, "error": f"Инструмента {name} нет. Доступны: {', '.join(handlers)}."}

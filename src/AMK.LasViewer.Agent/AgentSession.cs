@@ -22,7 +22,8 @@ public interface IAgentObserver
 
     void ToolStarted(ToolCall call);
 
-    void ToolFinished(ToolCall call, bool ok, string summary);
+    /// <summary>Инструмент выполнен; <paramref name="result"/> — полный результат, до обрезки для модели.</summary>
+    void ToolFinished(ToolCall call, ToolResult result);
 
     void StepFinished(ChatUsage? usage);
 
@@ -170,7 +171,7 @@ public sealed class AgentSession
                     ? result.Json[..MaxToolResultChars] + "…[результат обрезан: уточните интервал или уменьшите число точек]"
                     : result.Json;
 
-                observer.ToolFinished(call, result.Ok, result.Error ?? string.Empty);
+                observer.ToolFinished(call, result);
                 history.Add(ChatMessage.Tool(call.Id, json));
             }
         }

@@ -39,7 +39,8 @@ public sealed partial class AgentPane : UserControl
         "Опиши открытые файлы: интервал, кривые, замечания",
         "Где УЭС стоит у предела преобразования?",
         "Найди пропуски данных во всех кривых",
-        "Сравни зонды 400 и 2000 кГц на видимом участке"
+        "Сравни зонды 400 и 2000 кГц на видимом участке",
+        "Построй гистограммы и кросс-плот УЭС зондов"
     ];
 
     /// <summary>
@@ -63,6 +64,12 @@ public sealed partial class AgentPane : UserControl
 
     private AgentSettings settings;
     private CancellationTokenSource? running;
+
+    /// <summary>
+    /// Пользователь разрешил запускать скрипты без вопроса до конца диалога.
+    /// Читается из потока агента, поэтому volatile; сбрасывается новым диалогом.
+    /// </summary>
+    private volatile bool runScriptsWithoutAsking;
 
     public AgentPane()
     {
@@ -242,7 +249,7 @@ public sealed partial class AgentPane : UserControl
                 context,
                 client,
                 settings.Model.Length > 0 ? settings.Model : null,
-                new EngineAgentTools(engine),
+                new EngineAgentTools(engine, new ScriptApprover(this), AppInfo.ScriptsDirectory),
                 new TurnObserver(this, turn),
                 cancellation.Token);
             // Последние фрагменты текста ещё могут стоять в очереди окна —
@@ -278,6 +285,7 @@ public sealed partial class AgentPane : UserControl
     {
         running?.Cancel();
         session.Reset();
+        runScriptsWithoutAsking = false;
         messages.Children.Clear();
         ShowWelcome();
         UpdateFooter();
@@ -380,7 +388,8 @@ public sealed partial class AgentPane : UserControl
         StackPanel welcome = new() { Spacing = 8, Tag = "welcome" };
         welcome.Children.Add(new TextBlock
         {
-            Text = "Агент отвечает на вопросы о данных открытых файлов: считает статистику, ищет интервалы, сравнивает кривые. "
+            Text = "Агент отвечает на вопросы о данных открытых файлов: считает статистику, ищет интервалы, сравнивает кривые, "
+                   + "строит графики скриптами Python — каждый скрипт запускается только после вашего подтверждения. "
                    + "Файлы целиком никуда не отправляются — модель получает только результаты расчётов, выполненных на этом компьютере.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = MutedForeground,
@@ -541,6 +550,7 @@ public sealed partial class AgentPane : UserControl
             "find_intervals" => $"Поиск интервалов: {(Text("curve") is { Length: > 0 } one ? one : Text("curves"))} {Condition(Text("condition"))} {Text("value")}{(Text("value2") is { Length: > 0 } v2 ? "…" + v2 : string.Empty)}{range}".TrimEnd(),
             "get_samples" => $"Значения кривых: {Text("curves")}{range}",
             "compare_curves" => $"Сравнение: {Text("curve")} и {Text("other_curve")}{range}",
+            EngineAgentTools.ScriptToolName => Text("title") is { Length: > 0 } title ? $"Скрипт: {title}" : "Скрипт Python",
             _ => call.Name
         };
 
@@ -642,11 +652,24 @@ public sealed partial class AgentPane : UserControl
             pane.ScrollToEnd();
         }
 
-        public void ToolFinished(ToolCall call, bool ok, string error)
+        public void ToolFinished(ToolCall call, ToolResult result)
         {
+            bool script = call.Name == EngineAgentTools.ScriptToolName;
+            string error = result.Error ?? string.Empty;
+            if (script && error == EngineAgentTools.ScriptRejected)
+            {
+                error = "отклонён";
+            }
+
             if (toolLines.TryGetValue(call.Id, out TextBlock? line))
             {
-                line.Text = (ok ? "✓ " : "✗ ") + Describe(call) + (ok || error.Length == 0 ? string.Empty : " — " + error);
+                line.Text = (result.Ok ? "✓ " : "✗ ") + Describe(call) + (result.Ok || error.Length == 0 ? string.Empty : " — " + error);
+            }
+
+            if (script && error != "отклонён" && ScriptResultView.Build(call, result) is { } view)
+            {
+                Root.Children.Add(view);
+                pane.ScrollToEnd();
             }
         }
 
@@ -836,10 +859,62 @@ public sealed partial class AgentPane : UserControl
 
         public void ToolStarted(ToolCall call) => pane.Post(() => turn.ToolStarted(call));
 
-        public void ToolFinished(ToolCall call, bool ok, string summary) => pane.Post(() => turn.ToolFinished(call, ok, summary));
+        public void ToolFinished(ToolCall call, ToolResult result) => pane.Post(() => turn.ToolFinished(call, result));
 
         public void StepFinished(ChatUsage? usage) => pane.Post(pane.UpdateFooter);
 
         public void Notice(string text) => pane.Post(() => turn.Notice(text));
+    }
+
+    /// <summary>
+    /// Вопрос о запуске скрипта: агент спрашивает из своего потока, окно
+    /// показывается в потоке интерфейса через очередь диалогов.
+    /// </summary>
+    private sealed class ScriptApprover(AgentPane pane) : IScriptApprover
+    {
+        public Task<bool> ApproveAsync(ScriptRequest request, CancellationToken cancellationToken)
+        {
+            if (pane.runScriptsWithoutAsking)
+            {
+                AppLog.Write($"Агент: скрипт «{request.Title}» запущен без вопроса (разрешено в этом диалоге)");
+                return Task.FromResult(true);
+            }
+
+            if (pane.Dialogs is not { } dialogs)
+            {
+                return Task.FromResult(false);
+            }
+
+            TaskCompletionSource<bool> answer = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool queued = pane.DispatcherQueue.TryEnqueue(async () =>
+            {
+                try
+                {
+                    (bool run, bool trust) = await ScriptApprovalDialog.ShowAsync(dialogs, request, cancellationToken);
+                    if (trust)
+                    {
+                        pane.runScriptsWithoutAsking = true;
+                    }
+
+                    AppLog.Write($"Агент: скрипт «{request.Title}» {(run ? "разрешён" : "отклонён")} пользователем");
+                    answer.TrySetResult(run);
+                }
+                catch (OperationCanceledException)
+                {
+                    answer.TrySetCanceled(cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    AppLog.Write($"Агент: окно подтверждения скрипта: {exception}");
+                    answer.TrySetException(exception);
+                }
+            });
+            if (!queued)
+            {
+                answer.TrySetException(new InvalidOperationException("Окно программы закрыто."));
+            }
+
+            return answer.Task;
+        }
     }
 }

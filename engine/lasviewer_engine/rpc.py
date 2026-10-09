@@ -35,6 +35,20 @@ class RpcError(Exception):
         self.data = data
 
 
+class Background:
+    """Ответ, который обработчик досчитает в отдельном потоке.
+
+    Обработчик делает быструю часть сам (например, читает открытые файлы) и
+    возвращает ``Background(work)``. Сервер сразу переходит к следующему
+    запросу, а ответ уходит, когда ``work()`` закончится. Так долгий скрипт
+    агента не останавливает открытие файлов и другие запросы. ``work`` не
+    должна трогать общее состояние движка — только то, что ей передали.
+    """
+
+    def __init__(self, work: Callable[[], Any]) -> None:
+        self.work = work
+
+
 class Server:
     def __init__(self, reader: BinaryIO, writer: BinaryIO) -> None:
         self._reader = reader
@@ -99,9 +113,33 @@ class Server:
                 {"traceback": traceback.format_exc()},
             )
 
+        if isinstance(result, Background):
+            thread = threading.Thread(
+                target=self._finish_background,
+                args=(method, request_id, is_notification, result.work),
+                name=f"rpc-{method}",
+                daemon=True,
+            )
+            thread.start()
+            return None
+
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+    def _finish_background(self, method: str, request_id: Any, is_notification: bool, work: Callable[[], Any]) -> None:
+        try:
+            result = work()
+        except RpcError as exc:
+            response = _error_response(request_id, exc.code, exc.message, exc.data)
+        except Exception as exc:  # noqa: BLE001 — как и у обычного обработчика
+            log.exception("Ошибка обработчика %s", method)
+            response = _error_response(
+                request_id, INTERNAL_ERROR, f"{type(exc).__name__}: {exc}", {"traceback": traceback.format_exc()})
+        else:
+            response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        if not is_notification:
+            self._write(response)
 
     def _dispatch(self, method: str, params: Any) -> Any:
         handler = self.methods.get(method)
