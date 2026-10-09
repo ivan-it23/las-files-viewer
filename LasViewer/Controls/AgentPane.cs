@@ -153,7 +153,6 @@ public sealed partial class AgentPane : UserControl
         Grid.SetColumn(modelButton, 1);
         modelRow.Children.Add(modelButton);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(modelButton, "Модель агента");
-        ToolTipService.SetToolTip(modelButton, "Модель для следующих вопросов: большие — для сложных задач, малые — для простых");
         UpdateModelTitle();
 
         StackPanel bottom = new() { Spacing = 6 };
@@ -291,14 +290,11 @@ public sealed partial class AgentPane : UserControl
         UpdateFooter();
     }
 
-    /// <summary>
-    /// Выбор модели: два раздела — большие модели для сложных задач и малые
-    /// для простых, у каждой модели пояснение.
-    /// </summary>
+    /// <summary>Выбор модели: два раздела — большие и малые языковые модели.</summary>
     private void ShowModelChoice()
     {
         Flyout flyout = new() { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
-        StackPanel list = new() { Spacing = 2, Width = 320 };
+        StackPanel list = new() { Spacing = 2, Width = 240 };
         foreach ((bool large, string header) in new[] { (true, "Большие языковые модели:"), (false, "Малые языковые модели:") })
         {
             list.Children.Add(new TextBlock
@@ -331,9 +327,7 @@ public sealed partial class AgentPane : UserControl
             row.Children.Add(new FontIcon { Glyph = "", FontSize = 12, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 0, 0) });
         }
 
-        StackPanel text = new() { Spacing = 1 };
-        text.Children.Add(new TextBlock { Text = model.Title, FontSize = 13, FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal });
-        text.Children.Add(new TextBlock { Text = model.Description, FontSize = 12, Foreground = MutedForeground, TextWrapping = TextWrapping.Wrap });
+        TextBlock text = new() { Text = model.Title, FontSize = 13, FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal };
         Grid.SetColumn(text, 1);
         row.Children.Add(text);
 
@@ -346,7 +340,7 @@ public sealed partial class AgentPane : UserControl
             BorderThickness = new Thickness(0),
             Padding = new Thickness(8, 6, 8, 6)
         };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, $"{model.Title}: {model.Description}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, model.Title);
         button.Click += (_, _) =>
         {
             flyout.Hide();
@@ -375,7 +369,7 @@ public sealed partial class AgentPane : UserControl
     private void UpdateModelTitle()
     {
         AgentModel model = AgentSettings.ResolveModel(settings.Model);
-        modelTitle.Text = $"{model.Title} · {(model.Large ? "большая" : "малая")}";
+        modelTitle.Text = model.Title;
     }
 
     private string BuildContext()

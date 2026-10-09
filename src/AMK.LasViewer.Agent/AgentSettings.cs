@@ -33,10 +33,10 @@ public sealed class AgentSettings
     /// </summary>
     public static IReadOnlyList<AgentModel> Models { get; } =
     [
-        new(DefaultModel, "DeepSeek V4 Flash", "Сложный анализ нескольких файлов, скрипты и графики. Самая недорогая.", Large: true),
-        new("google/gemini-3.8-flash", "Gemini 3.8 Flash", "Новая флагманская модель: сложный анализ, скрипты, графики и отчёты.", Large: true),
-        new("anthropic/claude-haiku-5.5", "Claude Haiku 5.5", "Быстрые ответы на простые вопросы: сведения о файле, статистика кривых.", Large: false),
-        new("openai/gpt-6-luna-pro", "GPT-6 Luna Pro", "Простые задачи: поиск интервалов, пропусков, сравнение двух кривых.", Large: false)
+        new(DefaultModel, "DeepSeek V4 Flash", Large: true),
+        new("google/gemini-3.8-flash", "Gemini 3.8 Flash", Large: true),
+        new("anthropic/claude-haiku-5.5", "Claude Haiku 5.5", Large: false),
+        new("openai/gpt-6-luna-pro", "GPT-6 Luna Pro", Large: false)
     ];
 
     /// <summary>Модель из списка; сохранённая раньше модель, которой в списке нет (в том числе «модель сайта»), заменяется моделью по умолчанию.</summary>
@@ -72,9 +72,8 @@ public sealed class AgentSettings
 }
 
 /// <summary>Модель агента в списке выбора.</summary>
-/// <param name="Description">Для каких задач модель — пояснение пользователю.</param>
-/// <param name="Large">Большая языковая модель (сложные задачи) или малая (простые).</param>
-public sealed record AgentModel(string Id, string Title, string Description, bool Large);
+/// <param name="Large">Большая языковая модель (раздел «Большие языковые модели») или малая.</param>
+public sealed record AgentModel(string Id, string Title, bool Large);
 
 /// <summary>Настройки агента в профиле пользователя: <c>%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json</c>.</summary>
 public sealed class AgentSettingsStore(string settingsPath)

@@ -792,7 +792,6 @@ Check("агент: модели — большие и малые, старый �
 {
     Same(AgentSettings.Models.Where(model => model.Large).Select(model => model.Id), ["deepseek/deepseek-v4-flash", "google/gemini-3.8-flash"]);
     Same(AgentSettings.Models.Where(model => !model.Large).Select(model => model.Id), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna-pro"]);
-    True(AgentSettings.Models.All(model => model.Description.Length > 0), "у модели нет пояснения");
     Equal(new AgentSettings().Model, AgentSettings.DefaultModel);
 
     string directory = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
