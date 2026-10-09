@@ -56,5 +56,6 @@
   <ItemGroup>
     <ProjectReference Include="..\src\AMK.LasViewer.Engine\AMK.LasViewer.Engine.csproj" />
     <ProjectReference Include="..\src\AMK.LasViewer.Charting\AMK.LasViewer.Charting.csproj" />
+    <ProjectReference Include="..\src\AMK.LasViewer.Agent\AMK.LasViewer.Agent.csproj" />
   </ItemGroup>
 </Project>

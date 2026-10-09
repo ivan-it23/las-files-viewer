@@ -78,6 +78,10 @@ public sealed partial class MainWindow : Window
             project.MarkDirty();
         };
 
+        AgentPanel.Dialogs = dialogs;
+        AgentPanel.Engine = engine;
+        AgentPanel.ContextProvider = DescribeForAgent;
+
         AppWindow.Closing += AppWindow_Closing;
         RootGrid.Loaded += RootGrid_Loaded;
         RebuildTemplateMenu();
@@ -464,6 +468,58 @@ public sealed partial class MainWindow : Window
 
         static string Label(string name, double depth) =>
             (name.Length > 0 ? name + " " : string.Empty) + depth.ToString("0.##", CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>
+    /// Что сейчас открыто и видно — для системного сообщения агента: файлы с
+    /// идентификаторами движка, активный файл, видимый интервал и курсор.
+    /// Значения кривых сюда не входят — их агент получает инструментами.
+    /// </summary>
+    private string DescribeForAgent()
+    {
+        if (project.Documents.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        CultureInfo invariant = CultureInfo.InvariantCulture;
+        StringBuilder text = new("Открытые файлы:\n");
+        foreach (OpenedDocument document in project.Documents)
+        {
+            LasDocument las = document.Document;
+            Charting.TabletData data = document.TabletData;
+            IEnumerable<string> curves = las.DataCurves
+                .Take(40)
+                .Select(curve => curve.Unit.Length > 0 ? $"{curve.Mnemonic} ({curve.Unit})" : curve.Mnemonic);
+            text.Append("- ").Append(las.Name)
+                .Append(" (file_id=").Append(las.FileId).Append(document == active ? ", активный" : string.Empty).Append("): ")
+                .Append("глубина ").Append(data.Top.ToString("0.##", invariant)).Append('–').Append(data.Bottom.ToString("0.##", invariant))
+                .Append(' ').Append(data.IndexUnit)
+                .Append(", строк ").Append(las.RowCount.ToString(invariant))
+                .Append(", кривые: ").Append(string.Join(", ", curves))
+                .Append(las.DataCurves.Count() > 40 ? " и др." : string.Empty)
+                .Append('\n');
+        }
+
+        if (Panels.FocusedTablet is { HasData: true } tablet && Panels.FocusedDocument is { } focused)
+        {
+            double top = tablet.Top;
+            double bottom = tablet.Top + tablet.BodyHeight / tablet.PixelsPerUnit;
+            text.Append("Видимый интервал планшета ").Append(focused.Document.Name).Append(": ")
+                .Append(top.ToString("0.#", invariant)).Append('–').Append(bottom.ToString("0.#", invariant))
+                .Append(' ').Append(focused.TabletData.IndexUnit).Append('\n');
+            if (tablet.CursorDepth is { } cursor)
+            {
+                text.Append("Курсор: ").Append(cursor.ToString("0.##", invariant)).Append(' ').Append(focused.TabletData.IndexUnit).Append('\n');
+            }
+        }
+
+        if (Panels.Count > 1)
+        {
+            text.Append("Рядом показаны: ").Append(string.Join(", ", Panels.Documents.Select(document => document.Document.Name))).Append('\n');
+        }
+
+        return text.ToString();
     }
 
     private string TreeSignature()

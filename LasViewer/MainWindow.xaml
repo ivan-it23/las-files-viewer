@@ -200,21 +200,9 @@
             </Grid>
 
             <!-- Агент. -->
-            <Grid Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-                <Border Background="{StaticResource PanelHeaderBackground}" Padding="12,8">
-                    <TextBlock Text="Агент" FontWeight="SemiBold" />
-                </Border>
-                <TextBlock
-                    Grid.Row="1"
-                    Margin="12"
-                    Foreground="{StaticResource PlaceholderForeground}"
-                    TextWrapping="Wrap"
-                    Text="Здесь будет чат с ИИ-агентом." />
-            </Grid>
+            <Border Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
+                <controls:AgentPane x:Name="AgentPanel" />
+            </Border>
         </Grid>
 
         <!-- Строка состояния. -->

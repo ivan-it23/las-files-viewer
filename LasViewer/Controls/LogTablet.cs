@@ -145,6 +145,9 @@ public sealed partial class LogTablet : UserControl
 
     public double BodyHeight => bodyHeight;
 
+    /// <summary>Глубина под курсором мыши; <c>null</c>, если курсор вне планшета.</summary>
+    public double? CursorDepth => cursorDepth;
+
     public bool HasData => data is not null && data.Depths.Length > 0;
 
     public string IndexUnit => data?.IndexUnit ?? string.Empty;

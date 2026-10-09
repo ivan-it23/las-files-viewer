@@ -1,4 +1,5 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using AMK.LasViewer.Agent;
 using AMK.LasViewer.Charting;
 using AMK.LasViewer.Core;
 using AMK.LasViewer.Engine;
@@ -374,6 +375,229 @@ await CheckAsync("скважина 3201: открытие через движо�
     }
 });
 
+// ----------------------------------------------------------------------
+// ИИ-агент: поток посредника, цикл с инструментами, настройки
+// ----------------------------------------------------------------------
+
+await CheckAsync("агент: разбор потока — текст, вызов инструмента по частям, расход", async () =>
+{
+    string sse = string.Join("\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Смотрю \"}}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"curve_stats\",\"arguments\":\"{\\\"file_id\\\":\"}}]}}]}",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"f1\\\",\\\"curves\\\":[\\\"A\\\"]}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+        "",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":30,\"cost_rub\":0.0421}}",
+        "",
+        "data: [DONE]",
+        "",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"после конца — не читается\"}}]}");
+    List<string> pieces = [];
+    ChatCompletion completion = await LlmProxyClient.ReadStreamAsync(new StringReader(sse), pieces.Add, CancellationToken.None);
+    Equal(completion.Content, "Смотрю ");
+    Equal(pieces.Count, 1);
+    Equal(completion.ToolCalls.Count, 1);
+    Equal(completion.ToolCalls[0].Name, "curve_stats");
+    Equal(completion.ToolCalls[0].Arguments, "{\"file_id\":\"f1\",\"curves\":[\"A\"]}");
+    Equal(completion.FinishReason, "tool_calls");
+    Equal(completion.Usage, new ChatUsage(120, 30, 0.0421m));
+});
+
+await CheckAsync("агент: ошибка посредника в потоке и коды ответа сайта", async () =>
+{
+    try
+    {
+        await LlmProxyClient.ReadStreamAsync(
+            new StringReader("event: proxy_error\ndata: {\"code\":\"upstream_error\",\"status\":402,\"message\":\"На счёте polza.ai недостаточно средств.\"}\n\n"),
+            _ => { }, CancellationToken.None);
+        True(false, "ошибка посредника не распознана");
+    }
+    catch (LlmProxyException error)
+    {
+        Equal(error.Code, "upstream_error");
+        True(error.Message.Contains("недостаточно средств"), error.Message);
+    }
+
+    using FakeProxy unauthorized = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.Unauthorized, "{\"success\":false,\"code\":\"unauthorized\",\"message\":\"Токен недействителен или отозван.\"}"));
+    using LlmProxyClient client = new("amk-horizon.ru", "amkdv_test", unauthorized);
+    try
+    {
+        await client.GetStatusAsync(CancellationToken.None);
+        True(false, "401 не превратился в ошибку");
+    }
+    catch (LlmProxyException error)
+    {
+        True(error.IsAuthorizationProblem, error.Code);
+    }
+
+    using FakeProxy missing = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.NotFound, "<html>Controller 'Llm' not found.</html>"));
+    using LlmProxyClient old = new("https://amk-horizon.ru/front.php", "amkdv_test", missing);
+    try
+    {
+        await old.GetModelsAsync(CancellationToken.None);
+        True(false, "404 не превратился в ошибку");
+    }
+    catch (LlmProxyException error)
+    {
+        Equal(error.Code, "not_deployed");
+    }
+
+    Equal(LlmProxyClient.BuildEndpoint("amk-horizon.ru/"), "https://amk-horizon.ru/front.php");
+    Equal(LlmProxyClient.BuildEndpoint("http://127.0.0.1:8765"), "http://127.0.0.1:8765/front.php");
+    try
+    {
+        LlmProxyClient.BuildEndpoint("http://amk-horizon.ru");
+        True(false, "адрес без https принят");
+    }
+    catch (ArgumentException)
+    {
+    }
+});
+
+await CheckAsync("агент: цикл — вызов инструмента, результат модели, ответ; токен в заголовке", async () =>
+{
+    List<System.Text.Json.Nodes.JsonObject> bodies = [];
+    int call = 0;
+    using FakeProxy proxy = new((request, body) =>
+    {
+        True(request.Headers.Authorization?.Parameter == "amkdv_secret", "нет токена в Authorization");
+        True(request.RequestUri!.Query == "?c=Llm&a=chat", request.RequestUri.Query);
+        bodies.Add((System.Text.Json.Nodes.JsonObject)System.Text.Json.Nodes.JsonNode.Parse(body)!);
+        return ++call == 1
+            ? FakeProxy.Sse(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"curve_stats\",\"arguments\":\"{\\\"file_id\\\":\\\"f1\\\",\\\"curves\\\":[\\\"RO4\\\"]}\"}}]}}]}",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"cost_rub\":0.5}}",
+                "data: [DONE]")
+            : FakeProxy.Sse(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Среднее RO4 — 12 Ом·м.\"}}]}",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"cost_rub\":0.25}}",
+                "data: [DONE]");
+    });
+    using LlmProxyClient client = new("amk-horizon.ru", "amkdv_secret", proxy);
+    FakeTools tools = new();
+    RecordingObserver observer = new();
+    AgentSession session = new();
+
+    string answer = await session.AskAsync("Какое среднее RO4?", "Открыт f1", client, null, tools, observer, CancellationToken.None);
+
+    Equal(answer, "Среднее RO4 — 12 Ом·м.");
+    Same(tools.Calls, ["curve_stats {\"file_id\":\"f1\",\"curves\":[\"RO4\"]}"]);
+    Same(session.History.Select(m => m.Role), ["user", "assistant", "tool", "assistant"]);
+    Equal(session.SpentRub, 0.75m);
+    Same(observer.Events, ["tool+ curve_stats", "tool✓ curve_stats", "text Среднее RO4 — 12 Ом·м."]);
+
+    System.Text.Json.Nodes.JsonArray second = bodies[1]["messages"]!.AsArray();
+    Equal(second[0]!["role"]!.GetValue<string>(), "system");
+    True(second[0]!["content"]!.GetValue<string>().Contains("Открыт f1"), "контекст не попал в системное сообщение");
+    Equal(second[2]!["tool_calls"]![0]!["id"]!.GetValue<string>(), "c1");
+    Equal(second[3]!["role"]!.GetValue<string>(), "tool");
+    Equal(second[3]!["tool_call_id"]!.GetValue<string>(), "c1");
+    Equal(bodies[0]["tool_choice"]!.GetValue<string>(), "auto");
+    True(bodies[0]["tools"]!.AsArray().Count == 1, "инструменты не переданы");
+});
+
+await CheckAsync("агент: прерванный вопрос не оставляет в истории вызов без результата", async () =>
+{
+    using CancellationTokenSource cancel = new();
+    using FakeProxy proxy = new((_, _) => FakeProxy.Sse(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"curve_stats\",\"arguments\":\"{}\"}}]}}]}",
+        "data: [DONE]"));
+    using LlmProxyClient client = new("amk-horizon.ru", "t", proxy);
+    AgentSession session = new();
+    FakeTools tools = new() { OnCall = cancel.Cancel };
+    try
+    {
+        await session.AskAsync("вопрос", string.Empty, client, null, tools, new RecordingObserver(), cancel.Token);
+        True(false, "отмена не сработала");
+    }
+    catch (OperationCanceledException)
+    {
+    }
+
+    Equal(session.History.Count, 0);
+});
+
+await CheckAsync("агент: лимит шагов — после него инструменты отключаются", async () =>
+{
+    List<string> choices = [];
+    using FakeProxy proxy = new((_, body) =>
+    {
+        System.Text.Json.Nodes.JsonNode request = System.Text.Json.Nodes.JsonNode.Parse(body)!;
+        string choice = request["tool_choice"]!.GetValue<string>();
+        choices.Add(choice);
+        return choice == "auto"
+            ? FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"list_files\",\"arguments\":\"{}\"}}]}}]}", "data: [DONE]")
+            : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Итог\"}}]}", "data: [DONE]");
+    });
+    using LlmProxyClient client = new("amk-horizon.ru", "t", proxy);
+    AgentSession session = new();
+    string answer = await session.AskAsync("?", string.Empty, client, null, new FakeTools(), new RecordingObserver(), CancellationToken.None);
+    Equal(answer, "Итог");
+    Equal(choices.Count, AgentSession.MaxToolRounds + 1);
+    Equal(choices[^1], "none");
+});
+
+Check("агент: токен на диске только зашифрованным", () =>
+{
+    string directory = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        AgentSettingsStore store = new(Path.Combine(directory, "agent-settings.json"));
+        AgentSettings settings = new() { ServerUrl = "https://amk-horizon.ru", Token = "amkdv_0123456789abcdef", Model = "m" };
+        True(store.TrySave(settings), "настройки не сохранены");
+        string text = File.ReadAllText(store.SettingsPath);
+        True(!text.Contains("0123456789abcdef"), "токен записан открытым текстом");
+        AgentSettings loaded = store.Load();
+        Equal(loaded.Token, "amkdv_0123456789abcdef");
+        Equal(loaded.Model, "m");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+});
+
+await CheckAsync("агент: инструменты движка через JSON-RPC", async () =>
+{
+    string path = Path.Combine(Path.GetTempPath(), "lasviewer-agent-check-" + Guid.NewGuid().ToString("N") + ".las");
+    File.WriteAllText(path, string.Join("\n",
+        "~V", "VERS. 2.0 :", "WRAP. NO :", "~W", "NULL. -999.25 :", "WELL. 51 :", "~C", "DEPT.M :", "RO.OHMM : сопротивление", "~A",
+        "100.0 5", "100.1 7000", "100.2 7000", "100.3 7000", "100.4 6"));
+    try
+    {
+        await using EngineHost engine = new(AppContext.BaseDirectory, "checks");
+        True(await engine.StartAsync(CancellationToken.None), engine.LastError ?? "движок не запустился");
+        LasDocument document = await engine.OpenLasAsync(path, CancellationToken.None);
+        EngineAgentTools tools = new(engine);
+
+        System.Text.Json.Nodes.JsonArray list = await tools.GetToolsAsync(CancellationToken.None);
+        True(list.Count >= 5, $"инструментов {list.Count}");
+
+        ToolResult found = await tools.CallAsync(
+            "find_intervals",
+            $"{{\"file_id\":\"{document.FileId}\",\"curve\":\"RO\",\"condition\":\"gt\",\"value\":6900}}",
+            CancellationToken.None);
+        True(found.Ok, found.Error ?? found.Json);
+        System.Text.Json.Nodes.JsonNode result = System.Text.Json.Nodes.JsonNode.Parse(found.Json)!["result"]!;
+        Equal(result["found"]!.GetValue<int>(), 1);
+        Near(result["intervals"]![0]!["top"]!.GetValue<double>(), 100.1);
+
+        ToolResult wrong = await tools.CallAsync("curve_stats", "{\"file_id\":\"нет\",\"curves\":[\"RO\"]}", CancellationToken.None);
+        True(!wrong.Ok && wrong.Error!.Contains("не открыт"), wrong.Json);
+
+        ToolResult broken = await tools.CallAsync("curve_stats", "{не json", CancellationToken.None);
+        True(!broken.Ok, "неверный JSON аргументов принят");
+    }
+    finally
+    {
+        File.Delete(path);
+    }
+});
+
 Console.WriteLine(failures == 0
     ? $"Все проверки пройдены{(skipped > 0 ? $", пропущено: {skipped}" : string.Empty)}."
     : $"Не пройдено проверок: {failures}.");
@@ -424,6 +648,15 @@ static void Equal<T>(T actual, T expected)
     }
 }
 
+static void Same(IEnumerable<string> actual, string[] expected)
+{
+    string[] list = actual.ToArray();
+    if (!list.SequenceEqual(expected))
+    {
+        throw new InvalidOperationException($"ожидалось [{string.Join(", ", expected)}], получено [{string.Join(", ", list)}]");
+    }
+}
+
 static void Near(double actual, double expected)
 {
     if (Math.Abs(actual - expected) > 1e-9 * Math.Max(1, Math.Abs(expected)))
@@ -470,3 +703,61 @@ static LasDocument Document(IndexDirection direction, double[] depths, double[] 
 }
 
 internal sealed class SkipException(string message) : Exception(message);
+
+/// <summary>Сайт-посредник в памяти: отвечает тем, что вернёт обработчик.</summary>
+internal sealed class FakeProxy(Func<HttpRequestMessage, string, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    public static HttpResponseMessage Json(System.Net.HttpStatusCode status, string body) => new(status)
+    {
+        Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+    };
+
+    public static HttpResponseMessage Sse(params string[] lines) => new(System.Net.HttpStatusCode.OK)
+    {
+        Content = new StringContent(string.Join("\n\n", lines) + "\n\n", System.Text.Encoding.UTF8, "text/event-stream")
+    };
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        string body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+        return respond(request, body);
+    }
+}
+
+internal sealed class FakeTools : IAgentToolExecutor
+{
+    public List<string> Calls { get; } = [];
+
+    public Action? OnCall { get; init; }
+
+    public Task<System.Text.Json.Nodes.JsonArray> GetToolsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new System.Text.Json.Nodes.JsonArray(
+            new System.Text.Json.Nodes.JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new System.Text.Json.Nodes.JsonObject { ["name"] = "curve_stats", ["parameters"] = new System.Text.Json.Nodes.JsonObject { ["type"] = "object" } }
+            }));
+
+    public Task<ToolResult> CallAsync(string name, string argumentsJson, CancellationToken cancellationToken)
+    {
+        Calls.Add(name + " " + argumentsJson);
+        OnCall?.Invoke();
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new ToolResult(true, "{\"ok\":true,\"result\":{\"mean\":12}}"));
+    }
+}
+
+internal sealed class RecordingObserver : IAgentObserver
+{
+    public List<string> Events { get; } = [];
+
+    public void TextDelta(string text) => Events.Add("text " + text);
+
+    public void ToolStarted(ToolCall call) => Events.Add("tool+ " + call.Name);
+
+    public void ToolFinished(ToolCall call, bool ok, string summary) => Events.Add((ok ? "tool✓ " : "tool✗ ") + call.Name);
+
+    public void StepFinished(ChatUsage? usage)
+    {
+    }
+}

@@ -20,12 +20,13 @@ LasViewer.slnx
 ├── src/AMK.LasViewer.Core/         модель открытого LAS-файла
 ├── src/AMK.LasViewer.Charting/     математика планшета (без WinUI)
 ├── src/AMK.LasViewer.Engine/       запуск движка, JSON-RPC, методы las.*
+├── src/AMK.LasViewer.Agent/        ИИ-агент: клиент посредника, цикл с инструментами, настройки
 ├── engine/                         Python-движок (пакет lasviewer_engine)
 │   ├── lasviewer_engine/
 │   ├── tests/
 │   └── requirements.txt            пакеты для встроенного Python
 ├── tests/AMK.LasViewer.Engine.Smoke/  проверка связи C# ↔ движок
-├── tests/AMK.LasViewer.Checks/     проверки планшета и чтения LAS через движок
+├── tests/AMK.LasViewer.Checks/     проверки планшета, чтения LAS и агента
 ├── installer/setup.iss             установщик Inno Setup
 └── scripts/
     ├── Prepare-Python.ps1          встроенный Python → artifacts\python
@@ -64,7 +65,32 @@ dotnet run --project tests/AMK.LasViewer.Checks
 Тесты на реальных файлах скважины 3201 берут их из `LASVIEWER_SAMPLES_DIR`
 или из папки загрузок; данные заказчика в репозиторий не кладутся.
 
-Файлы можно открыть сразу при запуске: `LasViewer.exe путь\к\файлу.las …` или`nпроект `LasViewer.exe путь\к\проекту.lvproj`.`n`n## Данные пользователя`n`n| Что | Где |`n| --- | --- |`n| Проект (файлы, шаблоны, маркеры, интервалы, раскладка) | `*.lvproj` там, куда сохранил пользователь |`n| Библиотека шаблонов планшета | `%LOCALAPPDATA%\AMK\LasViewer\templates\*.lvtpl` |`n| Журналы | `%LOCALAPPDATA%\AMK\LasViewer\logs` |`n`nLAS-файлы программа не изменяет.
+Файлы можно открыть сразу при запуске: `LasViewer.exe путь\к\файлу.las …` или
+проект `LasViewer.exe путь\к\проекту.lvproj`.
+
+## Данные пользователя
+
+| Что | Где |
+| --- | --- |
+| Проект (файлы, шаблоны, маркеры, интервалы, раскладка) | `*.lvproj` там, куда сохранил пользователь |
+| Библиотека шаблонов планшета | `%LOCALAPPDATA%\AMK\LasViewer\templates\*.lvtpl` |
+| Подключение к ИИ-агенту (адрес сайта, модель, токен в DPAPI) | `%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json` |
+| Журналы | `%LOCALAPPDATA%\AMK\LasViewer\logs` |
+
+LAS-файлы программа не изменяет.
+
+## ИИ-агент
+
+Панель «Агент» справа. Вопрос уходит на сайт компании (`front.php?c=Llm`,
+контроллер `src/Controller/LlmController.php` репозитория horizon.ru), сайт
+подставляет ключ polza.ai и передаёт ответ потоком. Инструменты агента
+выполняет движок на рабочей станции (`engine/lasviewer_engine/agent_tools.py`),
+модель получает только их результаты.
+
+Для подключения нужен персональный токен из «Профиля» на сайте — тот же,
+что для «Визуализации данных». Проверка с учебным посредником без сайта:
+`LASVIEWER_AGENT_SETTINGS` указывает на отдельный файл настроек с адресом
+`http://127.0.0.1:…` (http допускается только для этого компьютера).
 
 Журналы приложения и вывод движка — `%LOCALAPPDATA%\AMK\LasViewer\logs`
 (меню «Движок → Открыть папку журналов»).
