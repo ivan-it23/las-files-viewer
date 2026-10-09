@@ -50,7 +50,14 @@ const MAX_MESSAGES = 300;
 const MAX_TOOLS = 32;
 const MAX_OUTPUT_TOKENS = 8000;
 const MODELS_CACHE_SECONDS = 3600;
-const STREAM_TIMEOUT_SECONDS = 240;
+const STREAM_TIMEOUT_SECONDS = 420;
+
+/**
+ * Пауза в ответе модели, после которой программе отправляется служебная
+ * строка SSE («: ping»): без неё сервер хостинга или прокси по пути могут
+ * закрыть соединение, решив, что оно простаивает.
+ */
+const KEEPALIVE_SECONDS = 10;
 
 ini_set('display_errors', '0');
 error_reporting(E_ALL);
@@ -258,6 +265,12 @@ function stream(array $payload, string $ip): void
     $parseBuffer = '';
     $usage = null;
     $aborted = false;
+    $lastOutput = time();
+
+    // Сразу — первая служебная строка: заголовки и начало ответа уходят
+    // программе, пока модель ещё не начала писать.
+    echo ": connected\n\n";
+    flush();
 
     $ch = curl_init(UPSTREAM . '/chat/completions');
     curl_setopt($ch, CURLOPT_POST, true);
@@ -277,7 +290,25 @@ function stream(array $payload, string $ip): void
         }
         return strlen($line);
     });
-    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$status, &$errorBody, &$parseBuffer, &$usage, &$aborted) {
+    // Примерно раз в секунду, даже когда модель молчит: здесь посылается
+    // «: ping» после паузы и замечается обрыв связи с программой.
+    curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+    curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function () use (&$status, &$lastOutput, &$aborted) {
+        if ($status !== 0 && $status !== 200) {
+            return 0;
+        }
+        if (time() - $lastOutput >= KEEPALIVE_SECONDS) {
+            echo ": ping\n\n";
+            flush();
+            $lastOutput = time();
+            if (connection_aborted()) {
+                $aborted = true;
+                return 1;
+            }
+        }
+        return 0;
+    });
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$status, &$errorBody, &$parseBuffer, &$usage, &$aborted, &$lastOutput) {
         if ($status !== 200) {
             if (strlen($errorBody) < 65536) {
                 $errorBody .= $chunk;
@@ -287,6 +318,7 @@ function stream(array $payload, string $ip): void
 
         echo $chunk;
         flush();
+        $lastOutput = time();
         if (connection_aborted()) {
             $aborted = true;
             return 0;

@@ -25,6 +25,9 @@ public interface IAgentObserver
     void ToolFinished(ToolCall call, bool ok, string summary);
 
     void StepFinished(ChatUsage? usage);
+
+    /// <summary>Служебное сообщение для пользователя: например, повтор запроса после обрыва связи.</summary>
+    void Notice(string text);
 }
 
 /// <summary>
@@ -40,6 +43,13 @@ public sealed class AgentSession
     private const string FinalRoundNote =
         "Лимит обращений к данным на этот вопрос исчерпан. Ответьте по уже полученным результатам инструментов; "
         + "если чего-то не хватило — скажите, что именно стоит уточнить отдельным вопросом.";
+
+    /// <summary>Сколько раз подряд шаг восстанавливается после обрыва связи, прежде чем вопрос считается неудачным.</summary>
+    public const int MaxRecoveries = 2;
+
+    private const string ContinueNote =
+        "Ответ оборвался из-за сбоя связи. Продолжите ровно с того места, где он прервался, "
+        + "не повторяя уже написанное и без вступлений.";
 
     /// <summary>Длина результата инструмента, после которой он обрезается для модели.</summary>
     public const int MaxToolResultChars = 24000;
@@ -118,15 +128,8 @@ public sealed class AgentSession
                 request.Add(ChatMessage.User(FinalRoundNote));
             }
 
-            ChatCompletion completion = await client.CompleteAsync(
-                model, request, toolList, allowTools, observer.TextDelta, cancellationToken).ConfigureAwait(false);
-
-            if (completion.Usage is { } usage)
-            {
-                SpentRub += usage.CostRub;
-            }
-
-            observer.StepFinished(completion.Usage);
+            ChatCompletion completion = await CompleteStepAsync(
+                client, model, request, toolList, allowTools, observer, cancellationToken).ConfigureAwait(false);
 
             if (completion.ToolCalls.Count == 0 || !allowTools)
             {
@@ -163,6 +166,60 @@ public sealed class AgentSession
 
                 observer.ToolFinished(call, result.Ok, result.Error ?? string.Empty);
                 history.Add(ChatMessage.Tool(call.Id, json));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Один шаг — запрос к модели — с восстановлением после обрыва связи.
+    /// Если поток оборвался посреди текста, показанное пользователю остаётся,
+    /// а модель просят продолжить с места обрыва: в чате это одно сообщение.
+    /// Если ничего не пришло, шаг повторяется. После <see cref="MaxRecoveries"/>
+    /// обрывов подряд вопрос завершается ошибкой.
+    /// </summary>
+    private async Task<ChatCompletion> CompleteStepAsync(
+        LlmProxyClient client,
+        string? model,
+        List<ChatMessage> request,
+        JsonArray toolList,
+        bool allowTools,
+        IAgentObserver observer,
+        CancellationToken cancellationToken)
+    {
+        string received = string.Empty;
+        List<ChatMessage> current = request;
+        for (int failures = 0; ; failures++)
+        {
+            ChatCompletion part = await client.CompleteAsync(
+                model, current, toolList, allowTools, observer.TextDelta, cancellationToken).ConfigureAwait(false);
+            if (part.Usage is { } usage)
+            {
+                SpentRub += usage.CostRub;
+            }
+
+            observer.StepFinished(part.Usage);
+            if (!part.Interrupted)
+            {
+                return part with { Content = received + part.Content };
+            }
+
+            if (failures >= MaxRecoveries)
+            {
+                throw new LlmProxyException(
+                    "stream_broken",
+                    "Связь с сайтом обрывается посреди ответа. Повторите вопрос немного позже или выберите другую модель.");
+            }
+
+            received += part.Content;
+            if (received.Trim().Length == 0)
+            {
+                observer.Notice("Связь с сайтом прервалась — повторяю запрос…");
+                current = request;
+                received = string.Empty;
+            }
+            else
+            {
+                current = [.. request, ChatMessage.Assistant(received, null), ChatMessage.User(ContinueNote)];
             }
         }
     }

@@ -183,9 +183,29 @@ public sealed class LlmProxyClient : IDisposable
         string? finishReason = null;
         ChatUsage? usage = null;
         string eventName = string.Empty;
+        bool done = false;
+        bool interrupted = false;
 
-        while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+        while (true)
         {
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (IOException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Соединение закрыто посреди ответа (ResponseEnded): уже
+                // полученное сохраняется, решение о продолжении — за сессией.
+                interrupted = true;
+                break;
+            }
+
+            if (line is null)
+            {
+                break;
+            }
+
             if (line.Length == 0)
             {
                 eventName = string.Empty;
@@ -206,6 +226,7 @@ public sealed class LlmProxyClient : IDisposable
             string data = line[5..].TrimStart();
             if (data == "[DONE]")
             {
+                done = true;
                 break;
             }
 
@@ -307,10 +328,19 @@ public sealed class LlmProxyClient : IDisposable
             }
         }
 
+        // Поток, закрытый без [DONE] и без причины завершения, тоже оборван:
+        // посредник о своих ошибках сообщает событием, а не молчанием.
+        if (!done && finishReason is null)
+        {
+            interrupted = true;
+        }
+
         List<ToolCall> result = [];
         foreach ((int index, ToolCallBuilder builder) in calls)
         {
-            if (builder.Name.Length == 0)
+            // Вызовы из оборванного потока могли прийти не целиком — их
+            // аргументам нельзя доверять.
+            if (builder.Name.Length == 0 || interrupted)
             {
                 continue;
             }
@@ -320,7 +350,7 @@ public sealed class LlmProxyClient : IDisposable
             result.Add(new ToolCall(id, builder.Name, arguments));
         }
 
-        return new ChatCompletion(content.ToString(), result, finishReason, usage);
+        return new ChatCompletion(content.ToString(), result, finishReason, usage, interrupted);
     }
 
     public void Dispose() => http.Dispose();

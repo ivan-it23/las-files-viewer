@@ -58,6 +58,8 @@ public sealed partial class AgentPane : UserControl
     private readonly FontIcon sendIcon = new() { Glyph = "", FontSize = 14 };
     private readonly TextBlock subtitle = new() { FontSize = 11, Foreground = MutedForeground, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock footer = new() { FontSize = 11, Foreground = MutedForeground, TextWrapping = TextWrapping.Wrap };
+    private readonly ComboBox modelPicker = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12, MinHeight = 28, Padding = new Thickness(8, 2, 8, 2) };
+    private bool fillingModels;
 
     private AgentSettings settings;
     private CancellationTokenSource? running;
@@ -129,7 +131,19 @@ public sealed partial class AgentPane : UserControl
         Grid.SetColumn(sendButton, 1);
         inputRow.Children.Add(sendButton);
 
-        StackPanel bottom = new() { Spacing = 4 };
+        Grid modelRow = new() { ColumnSpacing = 6 };
+        modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        modelRow.Children.Add(new TextBlock { Text = "Модель", FontSize = 12, Foreground = MutedForeground, VerticalAlignment = VerticalAlignment.Center });
+        Grid.SetColumn(modelPicker, 1);
+        modelRow.Children.Add(modelPicker);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(modelPicker, "Модель агента");
+        ToolTipService.SetToolTip(modelPicker, "Модель для следующих вопросов. Весь каталог polza.ai — в настройках подключения (шестерёнка).");
+        modelPicker.SelectionChanged += ModelPicker_SelectionChanged;
+        FillModelPicker();
+
+        StackPanel bottom = new() { Spacing = 6 };
+        bottom.Children.Add(modelRow);
         bottom.Children.Add(inputRow);
         bottom.Children.Add(footer);
         Border bottomBorder = new()
@@ -215,6 +229,7 @@ public sealed partial class AgentPane : UserControl
         using CancellationTokenSource cancellation = new();
         running = cancellation;
         sendIcon.Glyph = "";
+        modelPicker.IsEnabled = false;
         ToolTipService.SetToolTip(sendButton, "Остановить");
 
         string context = BuildContext();
@@ -253,6 +268,7 @@ public sealed partial class AgentPane : UserControl
         {
             running = null;
             sendIcon.Glyph = "";
+            modelPicker.IsEnabled = true;
             ToolTipService.SetToolTip(sendButton, "Отправить (Enter)");
             UpdateFooter();
         }
@@ -281,6 +297,7 @@ public sealed partial class AgentPane : UserControl
         }
 
         settings = updated;
+        FillModelPicker();
         if (!store.TrySave(settings))
         {
             await Dialogs.ShowMessageAsync("Настройки не сохранены", $"Не удалось записать {store.SettingsPath}.");
@@ -293,6 +310,51 @@ public sealed partial class AgentPane : UserControl
         }
 
         return settings.IsConfigured;
+    }
+
+    /// <summary>
+    /// Быстрый выбор модели: модель сайта и модели из <see cref="AgentSettings.QuickModels"/>.
+    /// Модель, выбранная в настройках из полного каталога, добавляется в список.
+    /// </summary>
+    private void FillModelPicker()
+    {
+        fillingModels = true;
+        try
+        {
+            modelPicker.Items.Clear();
+            foreach ((string id, string title) in AgentSettings.QuickModels)
+            {
+                modelPicker.Items.Add(new ComboBoxItem { Content = title, Tag = id });
+            }
+
+            if (settings.Model.Length > 0 && AgentSettings.QuickModels.All(model => model.Id != settings.Model))
+            {
+                modelPicker.Items.Add(new ComboBoxItem { Content = settings.Model, Tag = settings.Model });
+            }
+
+            modelPicker.SelectedItem = modelPicker.Items.OfType<ComboBoxItem>().First(item => (string)item.Tag == settings.Model);
+        }
+        finally
+        {
+            fillingModels = false;
+        }
+    }
+
+    private void ModelPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (fillingModels || modelPicker.SelectedItem is not ComboBoxItem { Tag: string model } || model == settings.Model)
+        {
+            return;
+        }
+
+        settings.Model = model;
+        if (!store.TrySave(settings))
+        {
+            AppLog.Write($"Агент: выбор модели не сохранён в {store.SettingsPath}");
+        }
+
+        UpdateHeader();
+        AppLog.Write($"Агент: выбрана модель {(model.Length > 0 ? model : "сайта")}");
     }
 
     private string BuildContext()
@@ -588,6 +650,13 @@ public sealed partial class AgentPane : UserControl
             }
         }
 
+        public void Notice(string message)
+        {
+            CompleteText();
+            Root.Children.Add(new TextBlock { Text = message, FontSize = 12, Foreground = ToolForeground, TextWrapping = TextWrapping.Wrap });
+            pane.ScrollToEnd();
+        }
+
         public void Finish(string? answer, string? note)
         {
             CompleteText();
@@ -770,5 +839,7 @@ public sealed partial class AgentPane : UserControl
         public void ToolFinished(ToolCall call, bool ok, string summary) => pane.Post(() => turn.ToolFinished(call, ok, summary));
 
         public void StepFinished(ChatUsage? usage) => pane.Post(pane.UpdateFooter);
+
+        public void Notice(string text) => pane.Post(() => turn.Notice(text));
     }
 }

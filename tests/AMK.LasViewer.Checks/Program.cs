@@ -523,6 +523,66 @@ await CheckAsync("агент: без настроек — общий досту�
     True(seen.Headers.Authorization?.Parameter == "amkdv_x" && seen.Headers.Contains("X-Client-Key"), "токен и ключ программы не переданы вместе");
 });
 
+await CheckAsync("агент: оборванный поток — продолжение с места обрыва, повтор, ошибка после повторных обрывов", async () =>
+{
+    // Поток без [DONE] и без причины завершения — оборван; вызовы инструментов из него отбрасываются.
+    ChatCompletion broken = await LlmProxyClient.ReadStreamAsync(new StringReader(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Начало \"}}]}\n\n"
+        + "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"curve_stats\",\"arguments\":\"{\\\"fi\"}}]}}]}\n\n"),
+        _ => { }, CancellationToken.None);
+    True(broken.Interrupted && broken.ToolCalls.Count == 0 && broken.Content == "Начало ", "оборванный поток не распознан");
+
+    // Продолжение: показанный текст остаётся, модель дописывает, в истории — одно сообщение.
+    int calls = 0;
+    using FakeProxy continuing = new((_, body) =>
+    {
+        calls++;
+        if (calls == 1)
+        {
+            return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Начало \"}}]}");
+        }
+
+        System.Text.Json.Nodes.JsonArray messages = System.Text.Json.Nodes.JsonNode.Parse(body)!["messages"]!.AsArray();
+        Equal(messages[^2]!["role"]!.GetValue<string>(), "assistant");
+        Equal(messages[^2]!["content"]!.GetValue<string>(), "Начало ");
+        True(messages[^1]!["content"]!.GetValue<string>().Contains("оборвался"), "нет просьбы продолжить");
+        return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"конец.\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]");
+    });
+    using LlmProxyClient client = new("amk-horizon.ru", null, continuing);
+    AgentSession session = new();
+    RecordingObserver observer = new();
+    string answer = await session.AskAsync("?", string.Empty, client, null, new FakeTools(), observer, CancellationToken.None);
+    Equal(answer, "Начало конец.");
+    Same(session.History.Select(m => m.Role), ["user", "assistant"]);
+    Same(observer.Events, ["text Начало ", "text конец."]);
+
+    // Обрыв до первого слова — шаг повторяется с исходным запросом.
+    int retries = 0;
+    using FakeProxy empty = new((_, _) => ++retries == 1
+        ? FakeProxy.Sse(": ping")
+        : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Готово\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
+    using LlmProxyClient retryClient = new("amk-horizon.ru", null, empty);
+    RecordingObserver retryObserver = new();
+    Equal(await new AgentSession().AskAsync("?", string.Empty, retryClient, null, new FakeTools(), retryObserver, CancellationToken.None), "Готово");
+    True(retryObserver.Events[0].StartsWith("notice ", StringComparison.Ordinal), "нет сообщения о повторе");
+
+    // Обрывы подряд — понятная ошибка, история чистая.
+    using FakeProxy always = new((_, _) => FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"…\"}}]}"));
+    using LlmProxyClient failing = new("amk-horizon.ru", null, always);
+    AgentSession failed = new();
+    try
+    {
+        await failed.AskAsync("?", string.Empty, failing, null, new FakeTools(), new RecordingObserver(), CancellationToken.None);
+        True(false, "повторные обрывы не привели к ошибке");
+    }
+    catch (LlmProxyException error)
+    {
+        Equal(error.Code, "stream_broken");
+    }
+
+    Equal(failed.History.Count, 0);
+});
+
 await CheckAsync("агент: прерванный вопрос не оставляет в истории вызов без результата", async () =>
 {
     using CancellationTokenSource cancel = new();
@@ -793,4 +853,6 @@ internal sealed class RecordingObserver : IAgentObserver
     public void StepFinished(ChatUsage? usage)
     {
     }
+
+    public void Notice(string text) => Events.Add("notice " + text);
 }

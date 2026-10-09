@@ -48,8 +48,12 @@ public sealed record ChatMessage(string Role, string? Content, IReadOnlyList<Too
 /// <summary>Расход одного запроса к модели.</summary>
 public sealed record ChatUsage(int PromptTokens, int CompletionTokens, decimal CostRub);
 
-/// <summary>Собранный из потока ответ модели.</summary>
-public sealed record ChatCompletion(string Content, IReadOnlyList<ToolCall> ToolCalls, string? FinishReason, ChatUsage? Usage);
+/// <summary>
+/// Собранный из потока ответ модели. <paramref name="Interrupted"/> — поток
+/// оборвался до конца: текст неполный, а незаконченные вызовы инструментов
+/// отброшены.
+/// </summary>
+public sealed record ChatCompletion(string Content, IReadOnlyList<ToolCall> ToolCalls, string? FinishReason, ChatUsage? Usage, bool Interrupted = false);
 
 /// <summary>Сведения посредника: кто подключён (общий доступ или сотрудник по токену), модель по умолчанию, лимиты.</summary>
 public sealed record ProxyStatus(

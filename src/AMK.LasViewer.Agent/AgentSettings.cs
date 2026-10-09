@@ -21,6 +21,21 @@ public sealed class AgentSettings
     /// </summary>
     public const string BuiltInClientKey = "lasviewer_d9e85fbec598620ac7e99d777aa41f6d";
 
+    /// <summary>
+    /// Модели для быстрого выбора в панели агента; пустой идентификатор —
+    /// модель сайта (deepseek/deepseek-v3.2-exp, как у ИИ-агента horizon.ru).
+    /// Все — из каталога polza.ai с поддержкой вызова инструментов. Остальные
+    /// модели каталога выбираются в настройках подключения.
+    /// </summary>
+    public static IReadOnlyList<(string Id, string Title)> QuickModels { get; } =
+    [
+        (string.Empty, "Модель сайта (DeepSeek V3.2 Exp)"),
+        ("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"),
+        ("anthropic/claude-haiku-5.5", "Claude Haiku 5.5"),
+        ("openai/gpt-6-luna-pro", "GPT-6 Luna Pro"),
+        ("qwen/qwen3.8-flash", "Qwen3.8 Flash")
+    ];
+
     public string ServerUrl { get; set; } = DefaultServerUrl;
 
     /// <summary>Модель; пусто — модель сайта (та же, что у ИИ-агента horizon.ru).</summary>
