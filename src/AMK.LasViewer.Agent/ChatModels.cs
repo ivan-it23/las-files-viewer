@@ -51,8 +51,9 @@ public sealed record ChatUsage(int PromptTokens, int CompletionTokens, decimal C
 /// <summary>Собранный из потока ответ модели.</summary>
 public sealed record ChatCompletion(string Content, IReadOnlyList<ToolCall> ToolCalls, string? FinishReason, ChatUsage? Usage);
 
-/// <summary>Сведения посредника: кто подключён, модель по умолчанию, лимиты.</summary>
+/// <summary>Сведения посредника: кто подключён (общий доступ или сотрудник по токену), модель по умолчанию, лимиты.</summary>
 public sealed record ProxyStatus(
+    bool Shared,
     string UserName,
     string DefaultModel,
     int RequestsPerHour,

@@ -35,7 +35,11 @@ public interface IAgentObserver
 public sealed class AgentSession
 {
     /// <summary>Сколько раз подряд модель может вызвать инструменты, прежде чем от неё потребуют ответ.</summary>
-    public const int MaxToolRounds = 8;
+    public const int MaxToolRounds = 12;
+
+    private const string FinalRoundNote =
+        "Лимит обращений к данным на этот вопрос исчерпан. Ответьте по уже полученным результатам инструментов; "
+        + "если чего-то не хватило — скажите, что именно стоит уточнить отдельным вопросом.";
 
     /// <summary>Длина результата инструмента, после которой он обрезается для модели.</summary>
     public const int MaxToolResultChars = 24000;
@@ -107,6 +111,13 @@ public sealed class AgentSession
             // ответить по уже собранным данным, а не ходить по кругу.
             bool allowTools = round < MaxToolRounds;
             List<ChatMessage> request = [ChatMessage.System(system), .. history];
+            if (!allowTools)
+            {
+                // Только в запросе, не в истории: в следующих вопросах этой
+                // просьбы быть не должно.
+                request.Add(ChatMessage.User(FinalRoundNote));
+            }
+
             ChatCompletion completion = await client.CompleteAsync(
                 model, request, toolList, allowTools, observer.TextDelta, cancellationToken).ConfigureAwait(false);
 

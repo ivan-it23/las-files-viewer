@@ -95,13 +95,15 @@ TOOLS: list[dict[str, Any]] = [
                 "Интервалы глубин, где кривая удовлетворяет условию. Условия: gt, ge, lt, le (сравнение с value), "
                 "between и outside (диапазон value…value2), null (пропуски), plateau (кривая почти не меняется — "
                 "«полки», насыщение у предела преобразования). Соседние интервалы с промежутком меньше merge_gap "
-                "сливаются, интервалы тоньше min_thickness отбрасываются."
+                "сливаются, интервалы тоньше min_thickness отбрасываются. Для нескольких кривых с одним условием "
+                "передайте их списком curves — это один вызов вместо нескольких."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_id": _FILE_ID,
-                    "curve": {"type": "string", "description": "Мнемоника кривой."},
+                    "curve": {"type": "string", "description": "Мнемоника кривой (или используйте curves)."},
+                    "curves": {**_CURVES, "description": "Несколько кривых с одним условием — результат по каждой."},
                     "condition": {
                         "type": "string",
                         "enum": ["gt", "ge", "lt", "le", "between", "outside", "null", "plateau"],
@@ -120,7 +122,7 @@ TOOLS: list[dict[str, Any]] = [
                     "top": _TOP,
                     "bottom": _BOTTOM,
                 },
-                "required": ["file_id", "curve", "condition"],
+                "required": ["file_id", "condition"],
                 "additionalProperties": False,
             },
         },
@@ -188,8 +190,8 @@ def register(server: Server, workspace: Workspace) -> None:
         "get_file_info": lambda file_id: get_file_info(workspace, file_id),
         "curve_stats": lambda file_id, curves, top=None, bottom=None: curve_stats(
             _file(workspace, file_id), curves, top, bottom),
-        "find_intervals": lambda file_id, curve, condition, **options: find_intervals(
-            _file(workspace, file_id), curve, condition, **options),
+        "find_intervals": lambda file_id, condition, curve=None, curves=None, **options: find_intervals_for(
+            _file(workspace, file_id), curve, curves, condition, options),
         "get_samples": lambda file_id, curves, top=None, bottom=None, max_points=DEFAULT_SAMPLE_POINTS, aggregate="mean":
             get_samples(_file(workspace, file_id), curves, top, bottom, max_points, aggregate),
         "compare_curves": lambda file_id, curve, other_curve, other_file_id=None, top=None, bottom=None: compare_curves(
@@ -308,6 +310,24 @@ def curve_stats(las: LasFile, curves: list[str], top: float | None, bottom: floa
             })
         result.append(entry)
     return {"interval": _interval(depths, start, stop), "curves": result}
+
+
+def find_intervals_for(las: LasFile, curve: Any, curves: Any, condition: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Одна кривая — результат как есть; список — результат по каждой кривой."""
+    if curves is None:
+        if curve is None:
+            raise ToolError("Укажите кривую: curve или список curves.")
+        return find_intervals(las, curve, condition, **options)
+
+    names = _curve_names(curves)
+    if curve is not None and curve not in names:
+        names = [curve, *names]
+    results = []
+    for name in names:
+        result = find_intervals(las, name, condition, **options)
+        result.pop("condition", None)
+        results.append(result)
+    return {"condition": condition, "results": results}
 
 
 def find_intervals(

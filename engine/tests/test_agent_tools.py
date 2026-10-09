@@ -108,6 +108,13 @@ class AgentToolTests(unittest.TestCase):
         plateau = call(self.server, "find_intervals", file_id="f1", curve="B", condition="plateau", min_thickness=0.3)["result"]
         self.assertEqual([(i["top"], i["bottom"], i["mean"]) for i in plateau["intervals"]], [(100.5, 100.9, 50.0)])
 
+    def test_find_intervals_for_several_curves_in_one_call(self):
+        result = call(self.server, "find_intervals", file_id="f1", curves=["A", "B"], condition="gt", value=15)["result"]
+        self.assertEqual([r["curve"] for r in result["results"]], ["A", "B"])
+        self.assertEqual(result["results"][0]["found"], 1)
+        missing = call(self.server, "find_intervals", file_id="f1", condition="gt", value=1)
+        self.assertFalse(missing["ok"])
+
     def test_merge_gap_joins_close_intervals(self):
         separate = call(self.server, "find_intervals", file_id="f1", curve="A", condition="outside", value=3, value2=17)["result"]
         self.assertEqual(separate["found"], 2)

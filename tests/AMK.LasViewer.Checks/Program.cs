@@ -445,6 +445,7 @@ await CheckAsync("агент: ошибка посредника в потоке 
 
     Equal(LlmProxyClient.BuildEndpoint("amk-horizon.ru/"), "https://amk-horizon.ru/front.php");
     Equal(LlmProxyClient.BuildEndpoint("http://127.0.0.1:8765"), "http://127.0.0.1:8765/front.php");
+    Equal(LlmProxyClient.BuildEndpoint("https://amk-horizon.ru/las/LlmController.php"), "https://amk-horizon.ru/las/LlmController.php");
     try
     {
         LlmProxyClient.BuildEndpoint("http://amk-horizon.ru");
@@ -497,6 +498,31 @@ await CheckAsync("агент: цикл — вызов инструмента, р
     True(bodies[0]["tools"]!.AsArray().Count == 1, "инструменты не переданы");
 });
 
+await CheckAsync("агент: без настроек — общий доступ по ключу программы, токен необязателен", async () =>
+{
+    True(new AgentSettings().IsConfigured, "настройки по умолчанию должны работать без токена");
+    Equal(LlmProxyClient.BuildEndpoint(new AgentSettings().ServerUrl), "https://amk-horizon.ru/las-viewer/LlmController.php");
+
+    HttpRequestMessage? seen = null;
+    using FakeProxy proxy = new((request, _) =>
+    {
+        seen = request;
+        return FakeProxy.Json(System.Net.HttpStatusCode.OK,
+            "{\"success\":true,\"shared\":true,\"user\":{\"username\":\"las-viewer\",\"full_name\":\"Общий доступ\"},\"default_model\":\"deepseek/deepseek-v3.2-exp\","
+            + "\"limits\":{\"requests_per_hour\":300,\"requests_last_hour\":0,\"daily_budget_rub\":1000,\"spent_today_rub\":0},\"configured\":true}");
+    });
+    using LlmProxyClient shared = new(AgentSettings.DefaultServerUrl, null, proxy);
+    ProxyStatus status = await shared.GetStatusAsync(CancellationToken.None);
+    True(status.Shared, "общий доступ не распознан");
+    Equal(status.DefaultModel, "deepseek/deepseek-v3.2-exp");
+    True(seen!.Headers.GetValues("X-Client-Key").Single() == AgentSettings.BuiltInClientKey, "нет ключа программы");
+    True(seen.Headers.Authorization is null && !seen.Headers.Contains("X-Api-Token"), "без токена не должно быть заголовков токена");
+
+    using LlmProxyClient personal = new(AgentSettings.DefaultServerUrl, "amkdv_x", proxy);
+    await personal.GetStatusAsync(CancellationToken.None);
+    True(seen.Headers.Authorization?.Parameter == "amkdv_x" && seen.Headers.Contains("X-Client-Key"), "токен и ключ программы не переданы вместе");
+});
+
 await CheckAsync("агент: прерванный вопрос не оставляет в истории вызов без результата", async () =>
 {
     using CancellationTokenSource cancel = new();
@@ -524,7 +550,14 @@ await CheckAsync("агент: лимит шагов — после него ин
     using FakeProxy proxy = new((_, body) =>
     {
         System.Text.Json.Nodes.JsonNode request = System.Text.Json.Nodes.JsonNode.Parse(body)!;
-        string choice = request["tool_choice"]!.GetValue<string>();
+        // Без инструментов в запросе — последний шаг: tools и tool_choice не передаются.
+        string choice = request["tool_choice"]?.GetValue<string>() ?? "none";
+        if (choice == "none")
+        {
+            True(request["tools"] is null, "на последнем шаге инструменты не должны передаваться");
+            string last = request["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>();
+            True(last.Contains("Лимит обращений"), "нет просьбы ответить по собранным данным");
+        }
         choices.Add(choice);
         return choice == "auto"
             ? FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"list_files\",\"arguments\":\"{}\"}}]}}]}", "data: [DONE]")

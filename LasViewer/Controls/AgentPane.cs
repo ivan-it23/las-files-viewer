@@ -84,7 +84,7 @@ public sealed partial class AgentPane : UserControl
         newChat.Click += (_, _) => NewConversation();
         Grid.SetColumn(newChat, 1);
         header.Children.Add(newChat);
-        Button settingsButton = IconButton("", "Подключение к ИИ-агенту");
+        Button settingsButton = IconButton("", "Подключение к ИИ-агенту (необязательно)");
         settingsButton.Click += async (_, _) => await EditSettingsAsync();
         Grid.SetColumn(settingsButton, 2);
         header.Children.Add(settingsButton);
@@ -221,7 +221,7 @@ public sealed partial class AgentPane : UserControl
         AppLog.Write($"Агент: вопрос ({question.Length} симв.), модель {(settings.Model.Length > 0 ? settings.Model : "по умолчанию")}");
         try
         {
-            using LlmProxyClient client = new(settings.ServerUrl, settings.Token);
+            using LlmProxyClient client = new(settings.ServerUrl);
             string answer = await session.AskAsync(
                 question,
                 context,
@@ -398,7 +398,7 @@ public sealed partial class AgentPane : UserControl
             host = settings.ServerUrl;
         }
 
-        subtitle.Text = (settings.Model.Length > 0 ? settings.Model : "модель по умолчанию") + " · " + host;
+        subtitle.Text = (settings.Model.Length > 0 ? settings.Model : "модель сайта") + " · " + host;
     }
 
     private void UpdateFooter()
@@ -476,7 +476,7 @@ public sealed partial class AgentPane : UserControl
             "list_files" => "Список открытых файлов",
             "get_file_info" => "Сведения о файле",
             "curve_stats" => $"Статистика: {Text("curves")}{range}",
-            "find_intervals" => $"Поиск интервалов: {Text("curve")} {Condition(Text("condition"))} {Text("value")}{(Text("value2") is { Length: > 0 } v2 ? "…" + v2 : string.Empty)}{range}".TrimEnd(),
+            "find_intervals" => $"Поиск интервалов: {(Text("curve") is { Length: > 0 } one ? one : Text("curves"))} {Condition(Text("condition"))} {Text("value")}{(Text("value2") is { Length: > 0 } v2 ? "…" + v2 : string.Empty)}{range}".TrimEnd(),
             "get_samples" => $"Значения кривых: {Text("curves")}{range}",
             "compare_curves" => $"Сравнение: {Text("curve")} и {Text("other_curve")}{range}",
             _ => call.Name
@@ -500,28 +500,69 @@ public sealed partial class AgentPane : UserControl
     // Ответ на один вопрос
     // ------------------------------------------------------------------
 
-    /// <summary>Блок ответа: текст модели и строки вызовов инструментов в порядке поступления.</summary>
-    private sealed class TurnView(AgentPane pane)
+    /// <summary>
+    /// Блок ответа: текст модели и строки вызовов инструментов в порядке поступления.
+    /// </summary>
+    /// <remarks>
+    /// Текст размечается сразу, по мере поступления. Законченные блоки —
+    /// всё до последней пустой строки вне блока кода — размечаются один раз и
+    /// больше не перерисовываются; перерисовывается только последний, ещё
+    /// растущий блок, и не чаще чем раз в <see cref="RenderDelay"/>: на
+    /// длинном ответе перерисовка всего текста на каждый фрагмент тормозила бы.
+    /// </remarks>
+    private sealed class TurnView
     {
+        private static readonly TimeSpan RenderDelay = TimeSpan.FromMilliseconds(90);
+
+        private readonly AgentPane pane;
         private readonly Dictionary<string, TextBlock> toolLines = [];
         private readonly StringBuilder text = new();
-        private TextBlock? streaming;
+        private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer renderTimer;
+
+        /// <summary>Текущий кусок текста — между вызовами инструментов.</summary>
+        private StackPanel? segment;
+
+        /// <summary>Сколько символов <see cref="text"/> уже размечено окончательно.</summary>
+        private int stableLength;
+
+        private FrameworkElement? tail;
         private bool shownAnyText;
+
+        public TurnView(AgentPane pane)
+        {
+            this.pane = pane;
+            renderTimer = pane.DispatcherQueue.CreateTimer();
+            renderTimer.Interval = RenderDelay;
+            renderTimer.IsRepeating = false;
+            renderTimer.Tick += (_, _) =>
+            {
+                try
+                {
+                    RenderSegment(final: false);
+                }
+                catch (Exception exception)
+                {
+                    AppLog.Write($"Агент: сбой разметки ответа: {exception}");
+                }
+            };
+        }
 
         public StackPanel Root { get; } = new() { Spacing = 6 };
 
         public void AppendText(string piece)
         {
-            if (streaming is null)
+            if (segment is null)
             {
-                streaming = new TextBlock { TextWrapping = TextWrapping.Wrap, FontSize = 13, IsTextSelectionEnabled = true };
-                Root.Children.Add(streaming);
+                segment = new StackPanel { Spacing = 6 };
+                Root.Children.Add(segment);
             }
 
             text.Append(piece);
-            streaming.Text = text.ToString();
             shownAnyText = true;
-            pane.ScrollToEnd();
+            if (!renderTimer.IsRunning)
+            {
+                renderTimer.Start();
+            }
         }
 
         public void ToolStarted(ToolCall call)
@@ -577,24 +618,146 @@ public sealed partial class AgentPane : UserControl
             pane.ScrollToEnd();
         }
 
-        /// <summary>Набранный потоком текст заменяется размеченным, когда кусок ответа закончен.</summary>
+        /// <summary>Кусок ответа закончен (вызов инструмента или конец ответа) — размечается целиком.</summary>
         private void CompleteText()
         {
-            if (streaming is null)
+            if (segment is null)
             {
                 return;
             }
 
-            int position = Root.Children.IndexOf(streaming);
-            string completed = text.ToString().Trim();
-            Root.Children.RemoveAt(position);
-            if (completed.Length > 0)
+            renderTimer.Stop();
+            RenderSegment(final: true);
+            if (segment.Children.Count == 0)
             {
-                Root.Children.Insert(position, MarkdownView.Render(completed));
+                Root.Children.Remove(segment);
             }
 
-            streaming = null;
+            segment = null;
+            tail = null;
+            stableLength = 0;
             text.Clear();
+        }
+
+        private void RenderSegment(bool final)
+        {
+            if (segment is null)
+            {
+                return;
+            }
+
+            string all = text.ToString();
+            int boundary = final ? all.Length : StableBoundary(all);
+            if (boundary > stableLength)
+            {
+                string stable = all[stableLength..boundary].Trim();
+                if (stable.Length > 0)
+                {
+                    int position = tail is null ? segment.Children.Count : segment.Children.IndexOf(tail);
+                    segment.Children.Insert(position, MarkdownView.Render(stable));
+                }
+
+                stableLength = boundary;
+            }
+
+            if (tail is not null)
+            {
+                segment.Children.Remove(tail);
+                tail = null;
+            }
+
+            string rest = all[stableLength..].Trim();
+            if (rest.Length > 0)
+            {
+                tail = MarkdownView.Render(CloseOpenMarkup(rest));
+                segment.Children.Add(tail);
+            }
+
+            pane.ScrollToEnd();
+        }
+
+        /// <summary>
+        /// Конец последнего законченного блока: последняя пустая строка вне
+        /// блока кода. Текст после неё ещё может измениться — например,
+        /// строка таблицы или пункт списка, пришедшие наполовину.
+        /// </summary>
+        private static int StableBoundary(string all)
+        {
+            int boundary = 0;
+            bool inCode = false;
+            int lineStart = 0;
+            while (lineStart < all.Length)
+            {
+                int lineEnd = all.IndexOf('\n', lineStart);
+                if (lineEnd < 0)
+                {
+                    break; // последняя строка не закончена
+                }
+
+                string line = all[lineStart..lineEnd].Trim();
+                if (line.StartsWith("```", StringComparison.Ordinal))
+                {
+                    inCode = !inCode;
+                }
+                else if (line.Length == 0 && !inCode)
+                {
+                    boundary = lineEnd + 1;
+                }
+
+                lineStart = lineEnd + 1;
+            }
+
+            return boundary;
+        }
+
+        /// <summary>
+        /// Для растущего блока закрывает начатую разметку — жирный, код в
+        /// строке, блок кода, — чтобы пользователь не видел «**» и «`», пока
+        /// модель не допишет вторую половину.
+        /// </summary>
+        private static string CloseOpenMarkup(string block)
+        {
+            int fences = 0;
+            foreach (string line in block.Split('\n'))
+            {
+                if (line.Trim().StartsWith("```", StringComparison.Ordinal))
+                {
+                    fences++;
+                }
+            }
+
+            if (fences % 2 == 1)
+            {
+                return block + "\n```";
+            }
+
+            string lastLine = block[(block.LastIndexOf('\n') + 1)..];
+            if (CountOccurrences(lastLine, "**") % 2 == 1)
+            {
+                // Нечётное число «**» — последний открывает выделение. Если за
+                // ним ещё ничего нет, он убирается, иначе выделение закрывается.
+                return block.EndsWith("**", StringComparison.Ordinal) ? block[..^2] : block + "**";
+            }
+
+            if (CountOccurrences(lastLine.Replace("**", string.Empty, StringComparison.Ordinal), "`") % 2 == 1)
+            {
+                return block + "`";
+            }
+
+            return block;
+        }
+
+        private static int CountOccurrences(string text, string value)
+        {
+            int count = 0;
+            int index = 0;
+            while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                index += value.Length;
+            }
+
+            return count;
         }
     }
 

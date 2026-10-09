@@ -21,6 +21,7 @@ LasViewer.slnx
 ├── src/AMK.LasViewer.Charting/     математика планшета (без WinUI)
 ├── src/AMK.LasViewer.Engine/       запуск движка, JSON-RPC, методы las.*
 ├── src/AMK.LasViewer.Agent/        ИИ-агент: клиент посредника, цикл с инструментами, настройки
+├── server/LlmController.php        посредник к polza.ai для хостинга (ключ — только на хостинге)
 ├── engine/                         Python-движок (пакет lasviewer_engine)
 │   ├── lasviewer_engine/
 │   ├── tests/
@@ -74,21 +75,28 @@ dotnet run --project tests/AMK.LasViewer.Checks
 | --- | --- |
 | Проект (файлы, шаблоны, маркеры, интервалы, раскладка) | `*.lvproj` там, куда сохранил пользователь |
 | Библиотека шаблонов планшета | `%LOCALAPPDATA%\AMK\LasViewer\templates\*.lvtpl` |
-| Подключение к ИИ-агенту (адрес сайта, модель, токен в DPAPI) | `%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json` |
+| Подключение к ИИ-агенту, если его меняли (адрес посредника, модель) | `%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json` |
 | Журналы | `%LOCALAPPDATA%\AMK\LasViewer\logs` |
 
 LAS-файлы программа не изменяет.
 
 ## ИИ-агент
 
-Панель «Агент» справа. Вопрос уходит на сайт компании (`front.php?c=Llm`,
-контроллер `src/Controller/LlmController.php` репозитория horizon.ru), сайт
-подставляет ключ polza.ai и передаёт ответ потоком. Инструменты агента
-выполняет движок на рабочей станции (`engine/lasviewer_engine/agent_tools.py`),
-модель получает только их результаты.
+Панель «Агент» справа. Вопрос уходит посреднику на сайте компании —
+`https://amk-horizon.ru/las-viewer/LlmController.php` (исходник —
+[`server/LlmController.php`](server/LlmController.php), на хостинге —
+`amk-horizon.ru/public_html/las-viewer/`). Посредник подставляет ключ polza.ai
+и модель `deepseek/deepseek-v3.2-exp` — те же, что у ИИ-агента horizon.ru, —
+и передаёт ответ потоком. Инструменты агента выполняет движок на рабочей
+станции (`engine/lasviewer_engine/agent_tools.py`), модель получает только их
+результаты.
 
-Для подключения нужен персональный токен из «Профиля» на сайте — тот же,
-что для «Визуализации данных». Проверка с учебным посредником без сайта:
+Пользователю ничего настраивать не нужно: программа предъявляет посреднику
+встроенный ключ клиента (`AgentSettings.BuiltInClientKey`). Ключ polza.ai
+вписывается только в копию `LlmController.php` на хостинге — в репозитории
+вместо него заглушка.
+
+Проверка с учебным посредником без сайта:
 `LASVIEWER_AGENT_SETTINGS` указывает на отдельный файл настроек с адресом
 `http://127.0.0.1:…` (http допускается только для этого компьютера).
 

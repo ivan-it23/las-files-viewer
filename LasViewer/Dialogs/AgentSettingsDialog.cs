@@ -6,30 +6,27 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace AMK.LasViewer.App.Dialogs;
 
-/// <summary>Подключение к ИИ-агенту: сайт-посредник, токен пользователя, модель.</summary>
+/// <summary>
+/// Подключение к ИИ-агенту: адрес посредника и модель. Менять ничего не нужно —
+/// по умолчанию работают посредник на сайте компании и модель сайта.
+/// </summary>
 internal static class AgentSettingsDialog
 {
     /// <returns>Новые настройки или <c>null</c>, если пользователь отказался.</returns>
     public static async Task<AgentSettings?> ShowAsync(DialogService dialogs, AgentSettings current)
     {
-        TextBox server = new() { Header = "Адрес сайта", Text = current.ServerUrl, MinWidth = 420 };
-        PasswordBox token = new()
+        TextBox server = new() { Header = "Адрес посредника", Text = current.ServerUrl, MinWidth = 420 };
+        TextBlock serverHint = new()
         {
-            Header = "Токен доступа",
-            Password = current.Token,
-            PlaceholderText = "amkdv_…"
-        };
-        TextBlock tokenHint = new()
-        {
-            Text = "Токен создаётся на сайте в «Профиле», в карточке доступа для приложений — тот же, что для «Визуализации данных». "
-                   + "Он хранится на этом компьютере в зашифрованном виде.",
+            Text = "Посредник на сайте компании подставляет ключ polza.ai и модель — те же, что у ИИ-агента horizon.ru. "
+                   + "Менять адрес нужно, только если посредник переехал.",
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.7,
             FontSize = 12
         };
 
         ComboBox model = new() { Header = "Модель", MinWidth = 420, HorizontalAlignment = HorizontalAlignment.Stretch };
-        model.Items.Add(new ComboBoxItem { Content = "Назначенная сайтом по умолчанию", Tag = string.Empty });
+        model.Items.Add(new ComboBoxItem { Content = "Модель сайта (как у ИИ-агента horizon.ru)", Tag = string.Empty });
         if (current.Model.Length > 0)
         {
             model.Items.Add(new ComboBoxItem { Content = current.Model, Tag = current.Model });
@@ -47,8 +44,7 @@ internal static class AgentSettingsDialog
 
         StackPanel content = new() { Spacing = 12, MinWidth = 440 };
         content.Children.Add(server);
-        content.Children.Add(token);
-        content.Children.Add(tokenHint);
+        content.Children.Add(serverHint);
         content.Children.Add(checkRow);
         content.Children.Add(result);
         content.Children.Add(model);
@@ -60,19 +56,19 @@ internal static class AgentSettingsDialog
             result.Text = string.Empty;
             try
             {
-                using LlmProxyClient client = new(server.Text, token.Password.Trim());
+                using LlmProxyClient client = new(server.Text);
                 ProxyStatus status = await client.GetStatusAsync(CancellationToken.None);
                 (string defaultModel, IReadOnlyList<ModelInfo> models) = await client.GetModelsAsync(CancellationToken.None);
 
                 CultureInfo culture = CultureInfo.CurrentCulture;
-                result.Text = $"Подключено: {status.UserName}.\n"
+                result.Text = "Посредник работает.\n"
                               + $"Сегодня израсходовано {status.SpentTodayRub.ToString("0.##", culture)} из {status.DailyBudgetRub.ToString("0.##", culture)} ₽, "
                               + $"запросов за час — {status.RequestsLastHour} из {status.RequestsPerHour}."
                               + (status.Configured ? string.Empty : "\nНа сайте не задан ключ polza.ai — агент работать не будет.");
 
                 string selected = model.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : string.Empty;
                 model.Items.Clear();
-                model.Items.Add(new ComboBoxItem { Content = $"Назначенная сайтом по умолчанию ({defaultModel})", Tag = string.Empty });
+                model.Items.Add(new ComboBoxItem { Content = $"Модель сайта ({defaultModel})", Tag = string.Empty });
                 foreach (ModelInfo info in models)
                 {
                     string price = info.PromptPerMillion is { } prompt && info.CompletionPerMillion is { } completion
@@ -97,7 +93,7 @@ internal static class AgentSettingsDialog
 
         ContentDialog dialog = new()
         {
-            Title = "Подключение к ИИ-агенту",
+            Title = "Подключение к ИИ-агенту (необязательно)",
             Content = new ScrollViewer { Content = content, MaxHeight = 560 },
             PrimaryButtonText = "Сохранить",
             CloseButtonText = "Отмена",
@@ -120,7 +116,7 @@ internal static class AgentSettingsDialog
 
             saved = current.Clone();
             saved.ServerUrl = server.Text.Trim();
-            saved.Token = token.Password.Trim();
+            saved.Token = string.Empty;
             saved.Model = model.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : string.Empty;
         };
 

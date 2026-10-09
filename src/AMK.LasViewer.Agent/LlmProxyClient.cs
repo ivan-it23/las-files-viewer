@@ -8,8 +8,9 @@ using System.Text.Json.Nodes;
 namespace AMK.LasViewer.Agent;
 
 /// <summary>
-/// Клиент посредника на сайте компании (<c>front.php?c=Llm</c>). Ключ сервиса
-/// моделей в приложение не попадает: оно предъявляет только токен пользователя.
+/// Клиент посредника на сайте компании (<c>front.php?c=Llm</c>). Ключ polza.ai
+/// и модель — сайта; программа предъявляет встроенный ключ клиента и, если
+/// задан, персональный токен сотрудника.
 /// </summary>
 public sealed class LlmProxyClient : IDisposable
 {
@@ -18,16 +19,22 @@ public sealed class LlmProxyClient : IDisposable
     private readonly HttpClient http;
     private readonly string endpoint;
 
-    public LlmProxyClient(string serverUrl, string token, HttpMessageHandler? handler = null)
+    /// <param name="token">Персональный токен; пусто — общий доступ программы.</param>
+    public LlmProxyClient(string serverUrl, string? token = null, HttpMessageHandler? handler = null)
     {
         endpoint = BuildEndpoint(serverUrl);
         http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
         // Потоковый ответ длится столько, сколько модель думает; ограничение
         // ставится на каждый запрос отдельно.
         http.Timeout = Timeout.InfiniteTimeSpan;
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        // Часть конфигураций Apache вырезает Authorization — токен дублируется.
-        http.DefaultRequestHeaders.TryAddWithoutValidation("X-Api-Token", token);
+        http.DefaultRequestHeaders.TryAddWithoutValidation("X-Client-Key", AgentSettings.BuiltInClientKey);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            // Часть конфигураций Apache вырезает Authorization — токен дублируется.
+            http.DefaultRequestHeaders.TryAddWithoutValidation("X-Api-Token", token.Trim());
+        }
+
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AMK-LasViewer");
     }
 
@@ -58,6 +65,15 @@ public sealed class LlmProxyClient : IDisposable
         }
 
         value = value.TrimEnd('/');
+
+        // Отдельный файл посредника (server/LlmController.php в папке сайта) —
+        // адрес указывается целиком и используется как есть.
+        if (value.EndsWith(".php", StringComparison.OrdinalIgnoreCase)
+            && !value.EndsWith("/front.php", StringComparison.OrdinalIgnoreCase))
+        {
+            return value;
+        }
+
         if (value.EndsWith("/front.php", StringComparison.OrdinalIgnoreCase))
         {
             value = value[..^"/front.php".Length];
@@ -71,6 +87,7 @@ public sealed class LlmProxyClient : IDisposable
         JsonElement root = await PostJsonAsync("status", new JsonObject(), cancellationToken).ConfigureAwait(false);
         JsonElement limits = root.GetProperty("limits");
         return new ProxyStatus(
+            !root.TryGetProperty("shared", out JsonElement shared) || shared.ValueKind != JsonValueKind.False,
             Text(root.GetProperty("user"), "full_name") is { Length: > 0 } name ? name : Text(root.GetProperty("user"), "username"),
             Text(root, "default_model"),
             limits.GetProperty("requests_per_hour").GetInt32(),
@@ -116,10 +133,13 @@ public sealed class LlmProxyClient : IDisposable
             body["model"] = model;
         }
 
-        if (tools is { Count: > 0 })
+        // Когда инструменты больше нельзя вызывать, их список не передаётся
+        // вовсе: при tool_choice "none" часть моделей (DeepSeek через polza.ai)
+        // всё равно пытается вызвать инструмент, и сервис отвечает ошибкой.
+        if (tools is { Count: > 0 } && allowTools)
         {
             body["tools"] = tools.DeepClone();
-            body["tool_choice"] = allowTools ? "auto" : "none";
+            body["tool_choice"] = "auto";
         }
 
         body["temperature"] = 0.2;

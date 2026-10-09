@@ -5,20 +5,31 @@ using System.Text.Json.Serialization;
 
 namespace AMK.LasViewer.Agent;
 
-/// <summary>Подключение к ИИ-агенту: адрес сайта-посредника, токен и модель.</summary>
+/// <summary>
+/// Подключение к ИИ-агенту. По умолчанию ничего настраивать не нужно: сайт
+/// компании подставляет свой ключ polza.ai и свою модель, а программа
+/// предъявляет встроенный ключ клиента.
+/// </summary>
 public sealed class AgentSettings
 {
-    public const string DefaultServerUrl = "https://amk-horizon.ru";
+    /// <summary>Посредник на сайте компании: server/LlmController.php, выложенный в public_html/las-viewer.</summary>
+    public const string DefaultServerUrl = "https://amk-horizon.ru/las-viewer/LlmController.php";
+
+    /// <summary>
+    /// Ключ клиента, который сайт ждёт от «Просмотрщика LAS» (LlmController.DEFAULT_CLIENT_KEY).
+    /// Не секрет: он отсекает случайные обращения, а расход ограничивает сайт.
+    /// </summary>
+    public const string BuiltInClientKey = "lasviewer_d9e85fbec598620ac7e99d777aa41f6d";
 
     public string ServerUrl { get; set; } = DefaultServerUrl;
 
-    /// <summary>Модель; пусто — модель по умолчанию, которую назначает сайт.</summary>
+    /// <summary>Модель; пусто — модель сайта (та же, что у ИИ-агента horizon.ru).</summary>
     public string Model { get; set; } = string.Empty;
 
     /// <summary>
-    /// Токен, зашифрованный DPAPI и записанный в Base64. В открытом виде на
-    /// диск не попадает: скопированный на другой компьютер файл настроек
-    /// расшифровать нельзя.
+    /// Необязательный персональный токен из «Профиля» — для учёта расхода по
+    /// сотруднику. Зашифрован DPAPI: скопированный на другой компьютер файл
+    /// настроек расшифровать нельзя.
     /// </summary>
     public string ProtectedToken { get; set; } = string.Empty;
 
@@ -27,7 +38,7 @@ public sealed class AgentSettings
     public string Token { get; set; } = string.Empty;
 
     [JsonIgnore]
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(ServerUrl) && !string.IsNullOrWhiteSpace(Token);
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(ServerUrl);
 
     public AgentSettings Clone() => new()
     {
