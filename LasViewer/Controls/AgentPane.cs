@@ -16,9 +16,10 @@ using Windows.UI;
 namespace AMK.LasViewer.App.Controls;
 
 /// <summary>
-/// Чат с ИИ-агентом. Вопрос уходит через посредника на сайте компании,
+/// Чат с ИИ-агентом. Вопрос уходит модели через посредника компании,
 /// инструменты выполняет движок на этой машине: модель видит только их
-/// результаты, а не файлы целиком.
+/// результаты, а не файлы целиком. Пользователь ничего не настраивает —
+/// только выбирает модель.
 /// </summary>
 /// <remarks>
 /// Ответ модели приходит не из потока интерфейса. Все изменения элементов
@@ -57,10 +58,16 @@ public sealed partial class AgentPane : UserControl
     private readonly TextBox input;
     private readonly Button sendButton;
     private readonly FontIcon sendIcon = new() { Glyph = "", FontSize = 14 };
-    private readonly TextBlock subtitle = new() { FontSize = 11, Foreground = MutedForeground, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock footer = new() { FontSize = 11, Foreground = MutedForeground, TextWrapping = TextWrapping.Wrap };
-    private readonly ComboBox modelPicker = new() { HorizontalAlignment = HorizontalAlignment.Stretch, FontSize = 12, MinHeight = 28, Padding = new Thickness(8, 2, 8, 2) };
-    private bool fillingModels;
+    private readonly Button modelButton = new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        FontSize = 12,
+        MinHeight = 28,
+        Padding = new Thickness(8, 2, 8, 2)
+    };
+    private readonly TextBlock modelTitle = new() { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
 
     private AgentSettings settings;
     private CancellationTokenSource? running;
@@ -80,23 +87,15 @@ public sealed partial class AgentPane : UserControl
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        // Заголовок: название, подключение, новый диалог, настройки.
+        // Заголовок: название и новый диалог.
         Grid header = new() { Background = HeaderBackground, Padding = new Thickness(12, 6, 6, 6), ColumnSpacing = 2 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        StackPanel title = new() { VerticalAlignment = VerticalAlignment.Center };
-        title.Children.Add(new TextBlock { Text = "Агент", FontWeight = FontWeights.SemiBold });
-        title.Children.Add(subtitle);
-        header.Children.Add(title);
+        header.Children.Add(new TextBlock { Text = "Агент", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         Button newChat = IconButton("", "Новый диалог");
         newChat.Click += (_, _) => NewConversation();
         Grid.SetColumn(newChat, 1);
         header.Children.Add(newChat);
-        Button settingsButton = IconButton("", "Подключение к ИИ-агенту (необязательно)");
-        settingsButton.Click += async (_, _) => await EditSettingsAsync();
-        Grid.SetColumn(settingsButton, 2);
-        header.Children.Add(settingsButton);
         root.Children.Add(header);
 
         scroller = new ScrollViewer
@@ -142,12 +141,20 @@ public sealed partial class AgentPane : UserControl
         modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         modelRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         modelRow.Children.Add(new TextBlock { Text = "Модель", FontSize = 12, Foreground = MutedForeground, VerticalAlignment = VerticalAlignment.Center });
-        Grid.SetColumn(modelPicker, 1);
-        modelRow.Children.Add(modelPicker);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(modelPicker, "Модель агента");
-        ToolTipService.SetToolTip(modelPicker, "Модель для следующих вопросов. Весь каталог polza.ai — в настройках подключения (шестерёнка).");
-        modelPicker.SelectionChanged += ModelPicker_SelectionChanged;
-        FillModelPicker();
+        Grid modelContent = new() { ColumnSpacing = 6 };
+        modelContent.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        modelContent.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        modelContent.Children.Add(modelTitle);
+        FontIcon chevron = new() { Glyph = "", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(chevron, 1);
+        modelContent.Children.Add(chevron);
+        modelButton.Content = modelContent;
+        modelButton.Click += (_, _) => ShowModelChoice();
+        Grid.SetColumn(modelButton, 1);
+        modelRow.Children.Add(modelButton);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(modelButton, "Модель агента");
+        ToolTipService.SetToolTip(modelButton, "Модель для следующих вопросов: большие — для сложных задач, малые — для простых");
+        UpdateModelTitle();
 
         StackPanel bottom = new() { Spacing = 6 };
         bottom.Children.Add(modelRow);
@@ -164,7 +171,6 @@ public sealed partial class AgentPane : UserControl
         root.Children.Add(bottomBorder);
 
         Content = root;
-        UpdateHeader();
         UpdateFooter();
         ShowWelcome();
     }
@@ -215,11 +221,6 @@ public sealed partial class AgentPane : UserControl
 
     private async Task AskAsync(string question)
     {
-        if (!settings.IsConfigured && !await EditSettingsAsync())
-        {
-            return;
-        }
-
         if (Engine is not { State: EngineState.Ready } engine)
         {
             AddError("Движок не готов. Дождитесь запуска или перезапустите его в меню «Движок».");
@@ -236,11 +237,11 @@ public sealed partial class AgentPane : UserControl
         using CancellationTokenSource cancellation = new();
         running = cancellation;
         sendIcon.Glyph = "";
-        modelPicker.IsEnabled = false;
+        modelButton.IsEnabled = false;
         ToolTipService.SetToolTip(sendButton, "Остановить");
 
         string context = BuildContext();
-        AppLog.Write($"Агент: вопрос ({question.Length} симв.), модель {(settings.Model.Length > 0 ? settings.Model : "по умолчанию")}");
+        AppLog.Write($"Агент: вопрос ({question.Length} симв.), модель {settings.Model}");
         try
         {
             using LlmProxyClient client = new(settings.ServerUrl);
@@ -248,7 +249,7 @@ public sealed partial class AgentPane : UserControl
                 question,
                 context,
                 client,
-                settings.Model.Length > 0 ? settings.Model : null,
+                settings.Model,
                 new EngineAgentTools(engine, new ScriptApprover(this), AppInfo.ScriptsDirectory),
                 new TurnObserver(this, turn),
                 cancellation.Token);
@@ -263,19 +264,18 @@ public sealed partial class AgentPane : UserControl
         catch (LlmProxyException exception)
         {
             AppLog.Write($"Агент: ошибка {exception.Code}: {exception.Message}");
-            bool fixable = exception.IsAuthorizationProblem || exception.Code is "not_deployed" or "model_not_allowed";
-            Post(() => turn.Fail(exception.Message, fixable));
+            Post(() => turn.Fail(exception.Message));
         }
         catch (Exception exception) when (exception is EngineException or ArgumentException or IOException or JsonException)
         {
             AppLog.Write($"Агент: сбой: {exception}");
-            Post(() => turn.Fail(exception.Message, false));
+            Post(() => turn.Fail(exception.Message));
         }
         finally
         {
             running = null;
             sendIcon.Glyph = "";
-            modelPicker.IsEnabled = true;
+            modelButton.IsEnabled = true;
             ToolTipService.SetToolTip(sendButton, "Отправить (Enter)");
             UpdateFooter();
         }
@@ -291,78 +291,91 @@ public sealed partial class AgentPane : UserControl
         UpdateFooter();
     }
 
-    private async Task<bool> EditSettingsAsync()
-    {
-        if (Dialogs is null)
-        {
-            return false;
-        }
-
-        AgentSettings? updated = await AgentSettingsDialog.ShowAsync(Dialogs, settings);
-        if (updated is null)
-        {
-            return settings.IsConfigured;
-        }
-
-        settings = updated;
-        FillModelPicker();
-        if (!store.TrySave(settings))
-        {
-            await Dialogs.ShowMessageAsync("Настройки не сохранены", $"Не удалось записать {store.SettingsPath}.");
-        }
-
-        UpdateHeader();
-        if (messages.Children.Count == 1 && messages.Children[0] is FrameworkElement { Tag: "welcome" })
-        {
-            ShowWelcome();
-        }
-
-        return settings.IsConfigured;
-    }
-
     /// <summary>
-    /// Быстрый выбор модели: модель сайта и модели из <see cref="AgentSettings.QuickModels"/>.
-    /// Модель, выбранная в настройках из полного каталога, добавляется в список.
+    /// Выбор модели: два раздела — большие модели для сложных задач и малые
+    /// для простых, у каждой модели пояснение.
     /// </summary>
-    private void FillModelPicker()
+    private void ShowModelChoice()
     {
-        fillingModels = true;
-        try
+        Flyout flyout = new() { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.TopEdgeAlignedLeft };
+        StackPanel list = new() { Spacing = 2, Width = 320 };
+        foreach ((bool large, string header) in new[] { (true, "Большие языковые модели:"), (false, "Малые языковые модели:") })
         {
-            modelPicker.Items.Clear();
-            foreach ((string id, string title) in AgentSettings.QuickModels)
+            list.Children.Add(new TextBlock
             {
-                modelPicker.Items.Add(new ComboBoxItem { Content = title, Tag = id });
-            }
+                Text = header,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MutedForeground,
+                Margin = new Thickness(8, list.Children.Count == 0 ? 0 : 10, 0, 2)
+            });
 
-            if (settings.Model.Length > 0 && AgentSettings.QuickModels.All(model => model.Id != settings.Model))
+            foreach (AgentModel model in AgentSettings.Models.Where(model => model.Large == large))
             {
-                modelPicker.Items.Add(new ComboBoxItem { Content = settings.Model, Tag = settings.Model });
+                list.Children.Add(ModelRow(model, flyout));
             }
+        }
 
-            modelPicker.SelectedItem = modelPicker.Items.OfType<ComboBoxItem>().First(item => (string)item.Tag == settings.Model);
-        }
-        finally
-        {
-            fillingModels = false;
-        }
+        flyout.Content = list;
+        flyout.ShowAt(modelButton);
     }
 
-    private void ModelPicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private Button ModelRow(AgentModel model, Flyout flyout)
     {
-        if (fillingModels || modelPicker.SelectedItem is not ComboBoxItem { Tag: string model } || model == settings.Model)
+        bool selected = model.Id == settings.Model;
+        Grid row = new() { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        if (selected)
+        {
+            row.Children.Add(new FontIcon { Glyph = "", FontSize = 12, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 0, 0) });
+        }
+
+        StackPanel text = new() { Spacing = 1 };
+        text.Children.Add(new TextBlock { Text = model.Title, FontSize = 13, FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal });
+        text.Children.Add(new TextBlock { Text = model.Description, FontSize = 12, Foreground = MutedForeground, TextWrapping = TextWrapping.Wrap });
+        Grid.SetColumn(text, 1);
+        row.Children.Add(text);
+
+        Button button = new()
+        {
+            Content = row,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 6, 8, 6)
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, $"{model.Title}: {model.Description}");
+        button.Click += (_, _) =>
+        {
+            flyout.Hide();
+            SelectModel(model);
+        };
+        return button;
+    }
+
+    private void SelectModel(AgentModel model)
+    {
+        if (model.Id == settings.Model)
         {
             return;
         }
 
-        settings.Model = model;
+        settings.Model = model.Id;
         if (!store.TrySave(settings))
         {
             AppLog.Write($"Агент: выбор модели не сохранён в {store.SettingsPath}");
         }
 
-        UpdateHeader();
-        AppLog.Write($"Агент: выбрана модель {(model.Length > 0 ? model : "сайта")}");
+        UpdateModelTitle();
+        AppLog.Write($"Агент: выбрана модель {model.Id}");
+    }
+
+    private void UpdateModelTitle()
+    {
+        AgentModel model = AgentSettings.ResolveModel(settings.Model);
+        modelTitle.Text = $"{model.Title} · {(model.Large ? "большая" : "малая")}";
     }
 
     private string BuildContext()
@@ -396,26 +409,17 @@ public sealed partial class AgentPane : UserControl
             FontSize = 13
         });
 
-        if (!settings.IsConfigured)
+        welcome.Children.Add(new TextBlock { Text = "Например:", FontSize = 12, Foreground = MutedForeground, Margin = new Thickness(0, 4, 0, 0) });
+        foreach (string example in Examples)
         {
-            Button connect = new() { Content = "Подключить агента…" };
-            connect.Click += async (_, _) => await EditSettingsAsync();
-            welcome.Children.Add(connect);
-        }
-        else
-        {
-            welcome.Children.Add(new TextBlock { Text = "Например:", FontSize = 12, Foreground = MutedForeground, Margin = new Thickness(0, 4, 0, 0) });
-            foreach (string example in Examples)
+            HyperlinkButton link = new() { Content = new TextBlock { Text = example, TextWrapping = TextWrapping.Wrap }, Padding = new Thickness(0, 2, 0, 2) };
+            link.Click += (_, _) =>
             {
-                HyperlinkButton link = new() { Content = new TextBlock { Text = example, TextWrapping = TextWrapping.Wrap }, Padding = new Thickness(0, 2, 0, 2) };
-                link.Click += (_, _) =>
-                {
-                    input.Text = example;
-                    input.Focus(FocusState.Programmatic);
-                    input.SelectionStart = example.Length;
-                };
-                welcome.Children.Add(link);
-            }
+                input.Text = example;
+                input.Focus(FocusState.Programmatic);
+                input.SelectionStart = example.Length;
+            };
+            welcome.Children.Add(link);
         }
 
         messages.Children.Add(welcome);
@@ -447,29 +451,6 @@ public sealed partial class AgentPane : UserControl
         RemoveWelcome();
         messages.Children.Add(new TextBlock { Text = text, Foreground = ErrorForeground, TextWrapping = TextWrapping.Wrap, FontSize = 13 });
         ScrollToEnd();
-    }
-
-    private void UpdateHeader()
-    {
-        if (!settings.IsConfigured)
-        {
-            subtitle.Text = "Не подключён";
-            return;
-        }
-
-        string host;
-        try
-        {
-            host = new Uri(LlmProxyClient.BuildEndpoint(settings.ServerUrl)).Host;
-        }
-        catch (ArgumentException)
-        {
-            // Файл настроек правили вручную: адрес покажется как есть, а
-            // ошибку объяснит первый же запрос.
-            host = settings.ServerUrl;
-        }
-
-        subtitle.Text = (settings.Model.Length > 0 ? settings.Model : "модель сайта") + " · " + host;
     }
 
     private void UpdateFooter()
@@ -696,17 +677,10 @@ public sealed partial class AgentPane : UserControl
             pane.ScrollToEnd();
         }
 
-        public void Fail(string message, bool offerSettings)
+        public void Fail(string message)
         {
             CompleteText();
             Root.Children.Add(new TextBlock { Text = message, Foreground = ErrorForeground, TextWrapping = TextWrapping.Wrap, FontSize = 13 });
-            if (offerSettings)
-            {
-                Button fix = new() { Content = "Настроить подключение…" };
-                fix.Click += async (_, _) => await pane.EditSettingsAsync();
-                Root.Children.Add(fix);
-            }
-
             pane.ScrollToEnd();
         }
 

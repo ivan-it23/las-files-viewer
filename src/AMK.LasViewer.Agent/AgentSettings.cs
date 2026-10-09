@@ -6,9 +6,9 @@ using System.Text.Json.Serialization;
 namespace AMK.LasViewer.Agent;
 
 /// <summary>
-/// Подключение к ИИ-агенту. По умолчанию ничего настраивать не нужно: сайт
-/// компании подставляет свой ключ polza.ai и свою модель, а программа
-/// предъявляет встроенный ключ клиента.
+/// Подключение к ИИ-агенту. Пользователю ничего настраивать не нужно:
+/// посредник подставляет ключ polza.ai, программа предъявляет встроенный
+/// ключ клиента, а модель выбирается в панели агента из <see cref="Models"/>.
 /// </summary>
 public sealed class AgentSettings
 {
@@ -21,25 +21,32 @@ public sealed class AgentSettings
     /// </summary>
     public const string BuiltInClientKey = "lasviewer_d9e85fbec598620ac7e99d777aa41f6d";
 
+    /// <summary>Модель по умолчанию — первая из больших: проверена на запросах с инструментами и самая недорогая.</summary>
+    public const string DefaultModel = "deepseek/deepseek-v4-flash";
+
     /// <summary>
-    /// Модели для быстрого выбора в панели агента; пустой идентификатор —
-    /// модель сайта (deepseek/deepseek-v3.2-exp, как у ИИ-агента horizon.ru).
-    /// Все — из каталога polza.ai с поддержкой вызова инструментов. Остальные
-    /// модели каталога выбираются в настройках подключения.
+    /// Модели агента в том порядке, в каком их видит пользователь: сначала
+    /// большие, затем малые. Все — из каталога polza.ai с поддержкой вызова
+    /// инструментов. Другие модели программа не предлагает: DeepSeek V3.2 Exp
+    /// устарела, а Qwen3.8 Flash отклонял полные запросы на стороне
+    /// провайдера (TOO_MANY_REQUESTS).
     /// </summary>
-    public static IReadOnlyList<(string Id, string Title)> QuickModels { get; } =
+    public static IReadOnlyList<AgentModel> Models { get; } =
     [
-        (string.Empty, "Модель сайта (DeepSeek V3.2 Exp)"),
-        ("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"),
-        ("anthropic/claude-haiku-5.5", "Claude Haiku 5.5"),
-        ("openai/gpt-6-luna-pro", "GPT-6 Luna Pro"),
-        ("qwen/qwen3.8-flash", "Qwen3.8 Flash")
+        new(DefaultModel, "DeepSeek V4 Flash", "Сложный анализ нескольких файлов, скрипты и графики. Самая недорогая.", Large: true),
+        new("google/gemini-3.8-flash", "Gemini 3.8 Flash", "Новая флагманская модель: сложный анализ, скрипты, графики и отчёты.", Large: true),
+        new("anthropic/claude-haiku-5.5", "Claude Haiku 5.5", "Быстрые ответы на простые вопросы: сведения о файле, статистика кривых.", Large: false),
+        new("openai/gpt-6-luna-pro", "GPT-6 Luna Pro", "Простые задачи: поиск интервалов, пропусков, сравнение двух кривых.", Large: false)
     ];
+
+    /// <summary>Модель из списка; сохранённая раньше модель, которой в списке нет (в том числе «модель сайта»), заменяется моделью по умолчанию.</summary>
+    public static AgentModel ResolveModel(string? id) =>
+        Models.FirstOrDefault(model => model.Id == id) ?? Models.First(model => model.Id == DefaultModel);
 
     public string ServerUrl { get; set; } = DefaultServerUrl;
 
-    /// <summary>Модель; пусто — модель сайта (та же, что у ИИ-агента horizon.ru).</summary>
-    public string Model { get; set; } = string.Empty;
+    /// <summary>Идентификатор модели из <see cref="Models"/>.</summary>
+    public string Model { get; set; } = DefaultModel;
 
     /// <summary>
     /// Необязательный персональный токен из «Профиля» — для учёта расхода по
@@ -64,6 +71,11 @@ public sealed class AgentSettings
     };
 }
 
+/// <summary>Модель агента в списке выбора.</summary>
+/// <param name="Description">Для каких задач модель — пояснение пользователю.</param>
+/// <param name="Large">Большая языковая модель (сложные задачи) или малая (простые).</param>
+public sealed record AgentModel(string Id, string Title, string Description, bool Large);
+
 /// <summary>Настройки агента в профиле пользователя: <c>%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json</c>.</summary>
 public sealed class AgentSettingsStore(string settingsPath)
 {
@@ -83,6 +95,7 @@ public sealed class AgentSettingsStore(string settingsPath)
             AgentSettings settings = JsonSerializer.Deserialize<AgentSettings>(File.ReadAllText(SettingsPath, Encoding.UTF8), SerializerOptions)
                                      ?? new AgentSettings();
             settings.Token = DataProtection.TryUnprotect(settings.ProtectedToken);
+            settings.Model = AgentSettings.ResolveModel(settings.Model).Id;
             return settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)

@@ -134,7 +134,6 @@
                     <SelectorBarItem Text="Планшет" Tag="tablet" IsSelected="True" />
                     <SelectorBarItem Text="Данные" Tag="data" />
                     <SelectorBarItem Text="Заголовок" Tag="header" />
-                    <SelectorBarItem Text="Сводка" Tag="summary" />
                 </SelectorBar>
 
                 <Grid
@@ -184,14 +183,13 @@
                         VerticalAlignment="Center"
                         Foreground="{StaticResource PlaceholderForeground}"
                         TextTrimming="CharacterEllipsis"
-                        Text="Колесо — прокрутка · Ctrl + колесо — масштаб · Shift + перетаскивание — интервал · правая кнопка — меню" />
+                        Text="Колесо — прокрутка · Ctrl + колесо — масштаб" />
                 </Grid>
 
                 <Grid Grid.Row="2">
                     <controls:TabletPanels x:Name="Panels" />
                     <controls:DataTableView x:Name="DataTable" Visibility="Collapsed" />
                     <controls:HeaderView x:Name="HeaderPanel" Visibility="Collapsed" />
-                    <controls:SummaryView x:Name="SummaryPanel" Visibility="Collapsed" />
                     <TextBlock
                         x:Name="EmptyHint"
                         HorizontalAlignment="Center"

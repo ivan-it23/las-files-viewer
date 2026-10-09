@@ -788,19 +788,50 @@ await CheckAsync("агент: лимит шагов — после него ин
     Equal(choices[^1], "none");
 });
 
+Check("агент: модели — большие и малые, старый выбор заменяется моделью по умолчанию", () =>
+{
+    Same(AgentSettings.Models.Where(model => model.Large).Select(model => model.Id), ["deepseek/deepseek-v4-flash", "google/gemini-3.8-flash"]);
+    Same(AgentSettings.Models.Where(model => !model.Large).Select(model => model.Id), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna-pro"]);
+    True(AgentSettings.Models.All(model => model.Description.Length > 0), "у модели нет пояснения");
+    Equal(new AgentSettings().Model, AgentSettings.DefaultModel);
+
+    string directory = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        AgentSettingsStore store = new(Path.Combine(directory, "agent-settings.json"));
+        Directory.CreateDirectory(directory);
+        // «Модель сайта» (пусто), Qwen и модель из полного каталога больше не предлагаются.
+        foreach (string old in new[] { "", "qwen/qwen3.8-flash", "deepseek/deepseek-v3.2-exp" })
+        {
+            File.WriteAllText(store.SettingsPath, "{\"ServerUrl\":\"" + AgentSettings.DefaultServerUrl + "\",\"Model\":\"" + old + "\"}");
+            Equal(store.Load().Model, AgentSettings.DefaultModel);
+        }
+
+        File.WriteAllText(store.SettingsPath, "{\"Model\":\"google/gemini-3.8-flash\"}");
+        Equal(store.Load().Model, "google/gemini-3.8-flash");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+});
+
 Check("агент: токен на диске только зашифрованным", () =>
 {
     string directory = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
     try
     {
         AgentSettingsStore store = new(Path.Combine(directory, "agent-settings.json"));
-        AgentSettings settings = new() { ServerUrl = "https://amk-horizon.ru", Token = "amkdv_0123456789abcdef", Model = "m" };
+        AgentSettings settings = new() { ServerUrl = "https://amk-horizon.ru", Token = "amkdv_0123456789abcdef", Model = "openai/gpt-6-luna-pro" };
         True(store.TrySave(settings), "настройки не сохранены");
         string text = File.ReadAllText(store.SettingsPath);
         True(!text.Contains("0123456789abcdef"), "токен записан открытым текстом");
         AgentSettings loaded = store.Load();
         Equal(loaded.Token, "amkdv_0123456789abcdef");
-        Equal(loaded.Model, "m");
+        Equal(loaded.Model, "openai/gpt-6-luna-pro");
     }
     finally
     {

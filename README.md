@@ -77,7 +77,7 @@ dotnet run --project tests/AMK.LasViewer.Checks
 | --- | --- |
 | Проект (файлы, шаблоны, маркеры, интервалы, раскладка) | `*.lvproj` там, куда сохранил пользователь |
 | Библиотека шаблонов планшета | `%LOCALAPPDATA%\AMK\LasViewer\templates\*.lvtpl` |
-| Подключение к ИИ-агенту, если его меняли (адрес посредника, модель) | `%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json` |
+| Выбранная модель агента | `%LOCALAPPDATA%\AMK\LasViewer\agent-settings.json` |
 | Скрипты агента: код, графики, таблицы — папка на каждый запуск | `%LOCALAPPDATA%\AMK\LasViewer\scripts` |
 | Журналы | `%LOCALAPPDATA%\AMK\LasViewer\logs` |
 

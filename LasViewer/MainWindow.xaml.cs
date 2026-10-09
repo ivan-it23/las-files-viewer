@@ -368,7 +368,6 @@ public sealed partial class MainWindow : Window
         {
             DataTable.Clear();
             HeaderPanel.Clear();
-            SummaryPanel.Clear();
             UpdateViewVisibility();
             return;
         }
@@ -378,7 +377,6 @@ public sealed partial class MainWindow : Window
             shownDetails = active;
             DataTable.Show(active.Document);
             HeaderPanel.Show(active.Document);
-            SummaryPanel.Show(active.Document);
         }
 
         UpdateViewVisibility();
@@ -725,7 +723,6 @@ public sealed partial class MainWindow : Window
         Panels.Visibility = Show(hasDocument && view == "tablet");
         DataTable.Visibility = Show(hasDocument && view == "data");
         HeaderPanel.Visibility = Show(hasDocument && view == "header");
-        SummaryPanel.Visibility = Show(hasDocument && view == "summary");
         TabletToolbar.Visibility = Show(hasDocument && view == "tablet");
         EmptyHint.Visibility = Show(!hasDocument);
 

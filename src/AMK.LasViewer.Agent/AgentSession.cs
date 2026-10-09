@@ -229,13 +229,13 @@ public sealed class AgentSession
             {
                 throw new LlmProxyException(
                     "stream_broken",
-                    "Связь с сайтом обрывается посреди ответа. Повторите вопрос немного позже или выберите другую модель.");
+                    "Связь с сервером агента обрывается посреди ответа. Повторите вопрос немного позже или выберите другую модель.");
             }
 
             received += part.Content;
             if (received.Trim().Length == 0)
             {
-                observer.Notice("Связь с сайтом прервалась — повторяю запрос…");
+                observer.Notice("Связь с сервером агента прервалась — повторяю запрос…");
                 current = request;
                 received = string.Empty;
             }

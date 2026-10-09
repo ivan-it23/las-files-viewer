@@ -48,7 +48,7 @@ public sealed class LlmProxyClient : IDisposable
         string value = (serverUrl ?? string.Empty).Trim();
         if (value.Length == 0)
         {
-            throw new ArgumentException("Не указан адрес сайта.", nameof(serverUrl));
+            throw new ArgumentException("Не указан адрес сервера агента.", nameof(serverUrl));
         }
 
         if (!value.Contains("://", StringComparison.Ordinal))
@@ -61,7 +61,7 @@ public sealed class LlmProxyClient : IDisposable
         if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttps && !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)))
         {
-            throw new ArgumentException("Адрес сайта должен начинаться с https://: по нему передаётся токен.", nameof(serverUrl));
+            throw new ArgumentException("Адрес сервера агента должен начинаться с https://: по нему передаётся токен.", nameof(serverUrl));
         }
 
         value = value.TrimEnd('/');
@@ -158,7 +158,7 @@ public sealed class LlmProxyClient : IDisposable
         }
         catch (HttpRequestException exception)
         {
-            throw new LlmProxyException("network_error", $"Нет связи с сайтом: {exception.Message}");
+            throw new LlmProxyException("network_error", $"Нет связи с сервером агента: {exception.Message}");
         }
 
         using (response)
@@ -374,7 +374,7 @@ public sealed class LlmProxyClient : IDisposable
         }
         catch (HttpRequestException exception)
         {
-            throw new LlmProxyException("network_error", $"Нет связи с сайтом: {exception.Message}");
+            throw new LlmProxyException("network_error", $"Нет связи с сервером агента: {exception.Message}");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -423,7 +423,7 @@ public sealed class LlmProxyClient : IDisposable
         }
 
         return status == HttpStatusCode.NotFound
-            ? new LlmProxyException("not_deployed", "На сайте нет посредника для ИИ-агента (front.php?c=Llm). Его нужно выложить на хостинг.", 404)
+            ? new LlmProxyException("not_deployed", "Сервер агента недоступен: посредник не найден. Сообщите разработчику программы.", 404)
             : new LlmProxyException("bad_response", $"Сайт ответил кодом {(int)status}. {NotJsonMessage(text)}", (int)status);
     }
 
