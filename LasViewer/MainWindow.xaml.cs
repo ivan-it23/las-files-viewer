@@ -42,6 +42,16 @@ public sealed partial class MainWindow : Window
         this.startupPaths = startupPaths;
         InitializeComponent();
         SetInitialSize(1400, 900);
+        ApplyMinimumSize();
+        // На другом мониторе другой масштаб — минимум в пикселях пересчитывается.
+        AppWindow.Changed += (_, change) =>
+        {
+            if (change.DidPositionChange)
+            {
+                ApplyMinimumSize();
+            }
+        };
+        (AppWindow.Presenter as OverlappedPresenter)?.Maximize();
 
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "LasViewer.ico");
         if (File.Exists(iconPath))
@@ -896,6 +906,32 @@ public sealed partial class MainWindow : Window
             workArea.Y + (workArea.Height - actualHeight) / 2,
             actualWidth,
             actualHeight));
+    }
+
+    /// <summary>
+    /// Минимальный размер окна в DIP (с рамкой). Подобран пользователем на
+    /// мониторе 1920 × 1080 при масштабе 125%: 1750 × 978 px. В DIP — чтобы
+    /// при другом масштабе интерфейс помещался так же.
+    /// </summary>
+    private const double MinimumWidthDip = 1400;
+
+    private const double MinimumHeightDip = 782.4;
+
+    /// <summary>
+    /// Меньше этого окно не уменьшается. На маленьком экране минимум не
+    /// больше рабочей области: иначе окно не поместилось бы на экран.
+    /// </summary>
+    private void ApplyMinimumSize()
+    {
+        if (AppWindow.Presenter is not OverlappedPresenter presenter)
+        {
+            return;
+        }
+
+        double scale = GetDpiForWindow(WindowNative.GetWindowHandle(this)) / 96.0;
+        RectInt32 workArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        presenter.PreferredMinimumWidth = Math.Min((int)Math.Ceiling(MinimumWidthDip * scale), workArea.Width);
+        presenter.PreferredMinimumHeight = Math.Min((int)Math.Ceiling(MinimumHeightDip * scale), workArea.Height);
     }
 
     [DllImport("user32.dll")]
