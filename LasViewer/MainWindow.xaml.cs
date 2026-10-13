@@ -805,40 +805,9 @@ public sealed partial class MainWindow : Window
         Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { AppInfo.LogDirectory } });
     }
 
-    private async void CheckUpdatesMenuItem_Click(object sender, RoutedEventArgs e)
+    private async void CheckUpdatesButton_Click(object sender, RoutedEventArgs e)
     {
         await updateFlow.RunAsync(silent: false, lifetime.Token);
-    }
-
-    private async void AboutMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        List<string> lines =
-        [
-            $"{AppInfo.ProductName}, версия {AppInfo.VersionText}",
-            "ООО НПФ «АМК ГОРИЗОНТ»",
-            string.Empty
-        ];
-
-        if (engine.Info is { } info)
-        {
-            lines.Add($"Движок {info.EngineVersion}, протокол {info.ProtocolVersion}, PID {info.Pid}");
-            lines.Add($"Python {info.Python.Version} {info.Python.Implementation}, "
-                      + (info.Python.Embedded ? "встроенный" : "системный"));
-            lines.Add(info.Python.Executable);
-            string packages = string.Join(", ", info.Packages.Select(pair => $"{pair.Key} {pair.Value ?? "—"}"));
-            lines.Add($"Пакеты: {packages}");
-        }
-        else
-        {
-            lines.Add($"Движок: {DescribeState(engine.State)}");
-        }
-
-        lines.Add(string.Empty);
-        lines.Add($"Журналы: {AppInfo.LogDirectory}");
-        lines.Add($"Шаблоны: {TemplateLibrary.Directory}");
-        lines.Add($"Обновления: {AutoUpdateService.UpdateRoot}");
-
-        await dialogs.ShowMessageAsync("О программе", string.Join(Environment.NewLine, lines));
     }
 
     private async void EngineDetailsButton_Click(object sender, RoutedEventArgs e)

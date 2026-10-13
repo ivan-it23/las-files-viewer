@@ -172,8 +172,8 @@ public sealed partial class LogTablet : UserControl
         : DepthViewport.RatioForPixelsPerUnit(pixelsPerUnit, data.IndexUnit);
 
     /// <summary>
-    /// Показывает данные. Без сохранённого вида — масштаб 1:500 от начала
-    /// записи: привычный масштаб, на котором кривые читаются.
+    /// Показывает данные. Без сохранённого вида — весь интервал записи в
+    /// высоту окна: при первом открытии файл виден целиком.
     /// </summary>
     internal void Show(
         ITabletContent shown,
@@ -198,8 +198,8 @@ public sealed partial class LogTablet : UserControl
         }
         else
         {
-            requestedRatio = 500;
-            fitPending = false;
+            requestedRatio = null;
+            fitPending = true;
             top = data.Top;
         }
 
