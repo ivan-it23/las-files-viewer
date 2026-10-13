@@ -98,21 +98,39 @@
         </Grid>
 
         <Grid Grid.Row="1" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,1">
+            <!-- Ширины боковых панелей меняет SetPaneCollapsed: свёрнутая панель — узкая полоса с кнопкой. -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="250" MinWidth="180" />
+                <ColumnDefinition x:Name="ProjectColumn" Width="250" MinWidth="180" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="320" MinWidth="240" />
+                <ColumnDefinition x:Name="AgentColumn" Width="320" MinWidth="240" />
             </Grid.ColumnDefinitions>
 
             <!-- Проект: открытые файлы, их кривые и пометки. -->
-            <Grid Grid.Column="0" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,1,0">
+            <Grid x:Name="ProjectPane" Grid.Column="0" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,1,0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <Border Background="{StaticResource PanelHeaderBackground}" Padding="12,8">
-                    <TextBlock x:Name="ProjectTitle" Text="Проект" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                </Border>
+                <Grid Background="{StaticResource PanelHeaderBackground}" Padding="12,6,6,6" ColumnSpacing="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock
+                        x:Name="ProjectTitle"
+                        VerticalAlignment="Center"
+                        Text="Проект"
+                        FontWeight="SemiBold"
+                        TextTrimming="CharacterEllipsis" />
+                    <Button
+                        Grid.Column="1"
+                        Style="{StaticResource PaneIconButtonStyle}"
+                        ToolTipService.ToolTip="Свернуть панель проекта"
+                        AutomationProperties.Name="Свернуть панель проекта"
+                        Click="HideProjectPaneButton_Click">
+                        <FontIcon Glyph="&#xE76B;" FontSize="12" />
+                    </Button>
+                </Grid>
                 <TreeView
                     x:Name="ProjectTree"
                     Grid.Row="1"
@@ -131,6 +149,25 @@
                     TextWrapping="Wrap"
                     Text="Файлы не открыты. Файл → Открыть LAS (Ctrl+O), перетащите LAS-файлы в окно или откройте проект (Ctrl+Shift+O)." />
             </Grid>
+            <Border
+                x:Name="ProjectStrip"
+                Grid.Column="0"
+                Width="40"
+                Padding="0,6"
+                Visibility="Collapsed"
+                Background="{StaticResource PanelHeaderBackground}"
+                BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="0,0,1,0">
+                <Button
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Style="{StaticResource PaneIconButtonStyle}"
+                    ToolTipService.ToolTip="Показать панель проекта"
+                    AutomationProperties.Name="Показать панель проекта"
+                    Click="ShowProjectPaneButton_Click">
+                    <FontIcon Glyph="&#xE76C;" FontSize="12" />
+                </Button>
+            </Border>
 
             <!-- Просмотр активного файла. -->
             <Grid Grid.Column="1">
@@ -211,8 +248,27 @@
             </Grid>
 
             <!-- Агент. -->
-            <Border Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
-                <controls:AgentPane x:Name="AgentPanel" />
+            <Border x:Name="AgentPaneBorder" Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
+                <controls:AgentPane x:Name="AgentPanel" HideRequested="AgentPanel_HideRequested" />
+            </Border>
+            <Border
+                x:Name="AgentStrip"
+                Grid.Column="2"
+                Width="40"
+                Padding="0,6"
+                Visibility="Collapsed"
+                Background="{StaticResource PanelHeaderBackground}"
+                BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="1,0,0,0">
+                <Button
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Style="{StaticResource PaneIconButtonStyle}"
+                    ToolTipService.ToolTip="Показать панель агента"
+                    AutomationProperties.Name="Показать панель агента"
+                    Click="ShowAgentPaneButton_Click">
+                    <FontIcon Glyph="&#xE76B;" FontSize="12" />
+                </Button>
             </Border>
         </Grid>
 

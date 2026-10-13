@@ -1,7 +1,5 @@
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace AMK.LasViewer.Agent;
 
@@ -21,8 +19,12 @@ public sealed class AgentSettings
     /// </summary>
     public const string BuiltInClientKey = "lasviewer_d9e85fbec598620ac7e99d777aa41f6d";
 
-    /// <summary>Модель по умолчанию — первая из больших: проверена на запросах с инструментами и самая недорогая.</summary>
-    public const string DefaultModel = "deepseek/deepseek-v4-flash";
+    /// <summary>
+    /// Модель по умолчанию — первая из больших: на запросах с инструментами
+    /// работает стабильнее остальных. Её получает пользователь, который ещё
+    /// не выбирал модель сам (выбор сохраняется только по щелчку в списке).
+    /// </summary>
+    public const string DefaultModel = "google/gemini-3.8-flash";
 
     /// <summary>
     /// Модели агента в том порядке, в каком их видит пользователь: сначала
@@ -33,8 +35,8 @@ public sealed class AgentSettings
     /// </summary>
     public static IReadOnlyList<AgentModel> Models { get; } =
     [
-        new(DefaultModel, "DeepSeek V4 Flash", Large: true),
-        new("google/gemini-3.8-flash", "Gemini 3.8 Flash", Large: true),
+        new(DefaultModel, "Gemini 3.8 Flash", Large: true),
+        new("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", Large: true),
         new("anthropic/claude-haiku-5.5", "Claude Haiku 5.5", Large: false),
         new("openai/gpt-6-luna-pro", "GPT-6 Luna Pro", Large: false)
     ];
@@ -47,28 +49,6 @@ public sealed class AgentSettings
 
     /// <summary>Идентификатор модели из <see cref="Models"/>.</summary>
     public string Model { get; set; } = DefaultModel;
-
-    /// <summary>
-    /// Необязательный персональный токен из «Профиля» — для учёта расхода по
-    /// сотруднику. Зашифрован DPAPI: скопированный на другой компьютер файл
-    /// настроек расшифровать нельзя.
-    /// </summary>
-    public string ProtectedToken { get; set; } = string.Empty;
-
-    /// <summary>Токен в открытом виде — только в памяти.</summary>
-    [JsonIgnore]
-    public string Token { get; set; } = string.Empty;
-
-    [JsonIgnore]
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(ServerUrl);
-
-    public AgentSettings Clone() => new()
-    {
-        ServerUrl = ServerUrl,
-        Model = Model,
-        ProtectedToken = ProtectedToken,
-        Token = Token
-    };
 }
 
 /// <summary>Модель агента в списке выбора.</summary>
@@ -93,14 +73,21 @@ public sealed class AgentSettingsStore(string settingsPath)
 
             AgentSettings settings = JsonSerializer.Deserialize<AgentSettings>(File.ReadAllText(SettingsPath, Encoding.UTF8), SerializerOptions)
                                      ?? new AgentSettings();
-            settings.Token = DataProtection.TryUnprotect(settings.ProtectedToken);
             settings.Model = AgentSettings.ResolveModel(settings.Model).Id;
+            // Адрес сайта без файла посредника — от версий, ходивших через
+            // front.php сайта horizon.ru; теперь посредник — отдельный файл.
+            if (!settings.ServerUrl.Trim().TrimEnd('/').EndsWith(".php", StringComparison.OrdinalIgnoreCase)
+                || settings.ServerUrl.Trim().TrimEnd('/').EndsWith("/front.php", StringComparison.OrdinalIgnoreCase))
+            {
+                settings.ServerUrl = AgentSettings.DefaultServerUrl;
+            }
+
             return settings;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
-            // Повреждённый файл настроек не должен мешать работе: токен
-            // просто вводится заново.
+            // Повреждённый файл настроек не должен мешать работе: модель
+            // просто выбирается заново.
             return new AgentSettings();
         }
     }
@@ -109,7 +96,6 @@ public sealed class AgentSettingsStore(string settingsPath)
     {
         try
         {
-            settings.ProtectedToken = DataProtection.Protect(settings.Token);
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             string temporary = SettingsPath + ".tmp";
             File.WriteAllText(temporary, JsonSerializer.Serialize(settings, SerializerOptions), new UTF8Encoding(false));
@@ -121,115 +107,4 @@ public sealed class AgentSettingsStore(string settingsPath)
             return false;
         }
     }
-}
-
-/// <summary>Шифрование токена средствами Windows (DPAPI) для текущего пользователя.</summary>
-internal static class DataProtection
-{
-    private const uint CryptProtectUiForbidden = 0x1;
-
-    public static string Protect(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return string.Empty;
-        }
-
-        DataBlob input = Allocate(Encoding.UTF8.GetBytes(value));
-        DataBlob output = default;
-        try
-        {
-            return CryptProtectData(ref input, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, ref output)
-                ? Convert.ToBase64String(Copy(output))
-                : string.Empty;
-        }
-        finally
-        {
-            Release(ref input);
-            Free(ref output);
-        }
-    }
-
-    public static string TryUnprotect(string protectedValue)
-    {
-        if (string.IsNullOrWhiteSpace(protectedValue))
-        {
-            return string.Empty;
-        }
-
-        byte[] encrypted;
-        try
-        {
-            encrypted = Convert.FromBase64String(protectedValue);
-        }
-        catch (FormatException)
-        {
-            return string.Empty;
-        }
-
-        DataBlob input = Allocate(encrypted);
-        DataBlob output = default;
-        try
-        {
-            return CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, ref output)
-                ? Encoding.UTF8.GetString(Copy(output))
-                : string.Empty;
-        }
-        finally
-        {
-            Release(ref input);
-            Free(ref output);
-        }
-    }
-
-    private static DataBlob Allocate(byte[] data)
-    {
-        IntPtr pointer = Marshal.AllocHGlobal(Math.Max(1, data.Length));
-        Marshal.Copy(data, 0, pointer, data.Length);
-        return new DataBlob { DataLength = data.Length, DataPointer = pointer };
-    }
-
-    private static byte[] Copy(DataBlob blob)
-    {
-        byte[] result = new byte[blob.DataLength];
-        Marshal.Copy(blob.DataPointer, result, 0, blob.DataLength);
-        return result;
-    }
-
-    private static void Release(ref DataBlob blob)
-    {
-        if (blob.DataPointer != IntPtr.Zero)
-        {
-            Marshal.FreeHGlobal(blob.DataPointer);
-            blob = default;
-        }
-    }
-
-    /// <summary>Результат CryptProtectData выделяется через LocalAlloc и освобождается LocalFree.</summary>
-    private static void Free(ref DataBlob blob)
-    {
-        if (blob.DataPointer != IntPtr.Zero)
-        {
-            LocalFree(blob.DataPointer);
-            blob = default;
-        }
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DataBlob
-    {
-        public int DataLength;
-        public IntPtr DataPointer;
-    }
-
-    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CryptProtectData(ref DataBlob input, string? description, IntPtr entropy, IntPtr reserved, IntPtr prompt, uint flags, ref DataBlob output);
-
-    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CryptUnprotectData(ref DataBlob input, IntPtr description, IntPtr entropy, IntPtr reserved, IntPtr prompt, uint flags, ref DataBlob output);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr LocalFree(IntPtr memory);
 }

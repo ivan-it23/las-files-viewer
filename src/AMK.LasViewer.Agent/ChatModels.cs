@@ -55,25 +55,10 @@ public sealed record ChatUsage(int PromptTokens, int CompletionTokens, decimal C
 /// </summary>
 public sealed record ChatCompletion(string Content, IReadOnlyList<ToolCall> ToolCalls, string? FinishReason, ChatUsage? Usage, bool Interrupted = false);
 
-/// <summary>Сведения посредника: кто подключён (общий доступ или сотрудник по токену), модель по умолчанию, лимиты.</summary>
-public sealed record ProxyStatus(
-    bool Shared,
-    string UserName,
-    string DefaultModel,
-    int RequestsPerHour,
-    int RequestsLastHour,
-    decimal DailyBudgetRub,
-    decimal SpentTodayRub,
-    bool Configured);
-
-public sealed record ModelInfo(string Id, string Name, int? ContextLength, decimal? PromptPerMillion, decimal? CompletionPerMillion);
-
 /// <summary>Ошибка посредника или сервиса моделей с кодом для выбора сообщения пользователю.</summary>
 public sealed class LlmProxyException(string code, string message, int? httpStatus = null) : Exception(message)
 {
     public string Code { get; } = code;
 
     public int? HttpStatus { get; } = httpStatus;
-
-    public bool IsAuthorizationProblem => Code == "unauthorized";
 }

@@ -8,19 +8,16 @@ using System.Text.Json.Nodes;
 namespace AMK.LasViewer.Agent;
 
 /// <summary>
-/// Клиент посредника на сайте компании (<c>front.php?c=Llm</c>). Ключ polza.ai
-/// и модель — сайта; программа предъявляет встроенный ключ клиента и, если
-/// задан, персональный токен сотрудника.
+/// Клиент посредника на сайте компании (<c>server/LlmController.php</c>).
+/// Ключ polza.ai хранится только у посредника; программа предъявляет
+/// встроенный ключ клиента и всегда указывает модель сама.
 /// </summary>
 public sealed class LlmProxyClient : IDisposable
 {
-    private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(30);
-
     private readonly HttpClient http;
     private readonly string endpoint;
 
-    /// <param name="token">Персональный токен; пусто — общий доступ программы.</param>
-    public LlmProxyClient(string serverUrl, string? token = null, HttpMessageHandler? handler = null)
+    public LlmProxyClient(string serverUrl, HttpMessageHandler? handler = null)
     {
         endpoint = BuildEndpoint(serverUrl);
         http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
@@ -28,20 +25,12 @@ public sealed class LlmProxyClient : IDisposable
         // ставится на каждый запрос отдельно.
         http.Timeout = Timeout.InfiniteTimeSpan;
         http.DefaultRequestHeaders.TryAddWithoutValidation("X-Client-Key", AgentSettings.BuiltInClientKey);
-        if (!string.IsNullOrWhiteSpace(token))
-        {
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
-            // Часть конфигураций Apache вырезает Authorization — токен дублируется.
-            http.DefaultRequestHeaders.TryAddWithoutValidation("X-Api-Token", token.Trim());
-        }
-
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AMK-LasViewer");
     }
 
     /// <summary>
-    /// Адрес точки входа. Принимаются «amk-horizon.ru», «https://amk-horizon.ru»
-    /// и «https://amk-horizon.ru/front.php». Без схемы — https: токен не должен
-    /// уходить открытым текстом.
+    /// Адрес файла посредника целиком, например
+    /// «https://amk-horizon.ru/las-viewer/LlmController.php». Без схемы — https.
     /// </summary>
     public static string BuildEndpoint(string serverUrl)
     {
@@ -57,61 +46,14 @@ public sealed class LlmProxyClient : IDisposable
         }
 
         // http допускается только для посредника на этом же компьютере — при
-        // разработке и проверке; по сети токен открытым текстом не уходит.
+        // разработке и проверке; по сети вопросы и данные открытым текстом не уходят.
         if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttps && !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)))
         {
-            throw new ArgumentException("Адрес сервера агента должен начинаться с https://: по нему передаётся токен.", nameof(serverUrl));
+            throw new ArgumentException("Адрес сервера агента должен начинаться с https://.", nameof(serverUrl));
         }
 
-        value = value.TrimEnd('/');
-
-        // Отдельный файл посредника (server/LlmController.php в папке сайта) —
-        // адрес указывается целиком и используется как есть.
-        if (value.EndsWith(".php", StringComparison.OrdinalIgnoreCase)
-            && !value.EndsWith("/front.php", StringComparison.OrdinalIgnoreCase))
-        {
-            return value;
-        }
-
-        if (value.EndsWith("/front.php", StringComparison.OrdinalIgnoreCase))
-        {
-            value = value[..^"/front.php".Length];
-        }
-
-        return value + "/front.php";
-    }
-
-    public async Task<ProxyStatus> GetStatusAsync(CancellationToken cancellationToken)
-    {
-        JsonElement root = await PostJsonAsync("status", new JsonObject(), cancellationToken).ConfigureAwait(false);
-        JsonElement limits = root.GetProperty("limits");
-        return new ProxyStatus(
-            !root.TryGetProperty("shared", out JsonElement shared) || shared.ValueKind != JsonValueKind.False,
-            Text(root.GetProperty("user"), "full_name") is { Length: > 0 } name ? name : Text(root.GetProperty("user"), "username"),
-            Text(root, "default_model"),
-            limits.GetProperty("requests_per_hour").GetInt32(),
-            limits.GetProperty("requests_last_hour").GetInt32(),
-            limits.GetProperty("daily_budget_rub").GetDecimal(),
-            limits.GetProperty("spent_today_rub").GetDecimal(),
-            root.TryGetProperty("configured", out JsonElement configured) && configured.ValueKind == JsonValueKind.True);
-    }
-
-    public async Task<(string DefaultModel, IReadOnlyList<ModelInfo> Models)> GetModelsAsync(CancellationToken cancellationToken)
-    {
-        JsonElement root = await PostJsonAsync("models", new JsonObject(), cancellationToken).ConfigureAwait(false);
-        List<ModelInfo> models = [];
-        foreach (JsonElement model in root.GetProperty("models").EnumerateArray())
-        {
-            models.Add(new ModelInfo(
-                Text(model, "id"),
-                Text(model, "name") is { Length: > 0 } name ? name : Text(model, "id"),
-                Number(model, "context_length") is { } context ? (int)context : null,
-                Number(model, "prompt_per_million"),
-                Number(model, "completion_per_million")));
-        }
-
-        return (Text(root, "default_model"), models);
+        return value.TrimEnd('/');
     }
 
     /// <summary>
@@ -145,7 +87,7 @@ public sealed class LlmProxyClient : IDisposable
         body["temperature"] = 0.2;
         body["max_tokens"] = 4000;
 
-        using HttpRequestMessage request = new(HttpMethod.Post, endpoint + "?c=Llm&a=chat")
+        using HttpRequestMessage request = new(HttpMethod.Post, endpoint + "?a=chat")
         {
             Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
         };
@@ -357,54 +299,6 @@ public sealed class LlmProxyClient : IDisposable
     }
 
     public void Dispose() => http.Dispose();
-
-    private async Task<JsonElement> PostJsonAsync(string action, JsonObject body, CancellationToken cancellationToken)
-    {
-        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ShortTimeout);
-        using HttpRequestMessage request = new(HttpMethod.Post, endpoint + "?c=Llm&a=" + action)
-        {
-            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
-        };
-
-        HttpResponseMessage response;
-        try
-        {
-            response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new LlmProxyException("network_error", $"Нет связи с сервером агента: {exception.Message}");
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new LlmProxyException("timeout", "Сайт не ответил за 30 секунд.");
-        }
-
-        using (response)
-        {
-            string text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw ErrorFrom(response.StatusCode, text);
-            }
-
-            try
-            {
-                JsonElement root = JsonDocument.Parse(text).RootElement;
-                if (root.TryGetProperty("success", out JsonElement success) && success.ValueKind == JsonValueKind.True)
-                {
-                    return root;
-                }
-
-                throw ErrorFrom(response.StatusCode, text);
-            }
-            catch (JsonException)
-            {
-                throw new LlmProxyException("bad_response", NotJsonMessage(text));
-            }
-        }
-    }
 
     private static LlmProxyException ErrorFrom(HttpStatusCode status, string text)
     {

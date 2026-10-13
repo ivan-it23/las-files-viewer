@@ -565,23 +565,23 @@ await CheckAsync("агент: ошибка посредника в потоке 
         True(error.Message.Contains("недостаточно средств"), error.Message);
     }
 
-    using FakeProxy unauthorized = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.Unauthorized, "{\"success\":false,\"code\":\"unauthorized\",\"message\":\"Токен недействителен или отозван.\"}"));
-    using LlmProxyClient client = new("amk-horizon.ru", "amkdv_test", unauthorized);
+    using FakeProxy unauthorized = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.Unauthorized, "{\"success\":false,\"code\":\"unauthorized\",\"message\":\"Неверный ключ программы.\"}"));
+    using LlmProxyClient client = new("amk-horizon.ru", unauthorized);
     try
     {
-        await client.GetStatusAsync(CancellationToken.None);
+        await client.CompleteAsync(null, [], null, false, _ => { }, CancellationToken.None);
         True(false, "401 не превратился в ошибку");
     }
     catch (LlmProxyException error)
     {
-        True(error.IsAuthorizationProblem, error.Code);
+        Equal(error.Code, "unauthorized");
     }
 
-    using FakeProxy missing = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.NotFound, "<html>Controller 'Llm' not found.</html>"));
-    using LlmProxyClient old = new("https://amk-horizon.ru/front.php", "amkdv_test", missing);
+    using FakeProxy missing = new((_, _) => FakeProxy.Json(System.Net.HttpStatusCode.NotFound, "<html>Not Found</html>"));
+    using LlmProxyClient old = new(AgentSettings.DefaultServerUrl, missing);
     try
     {
-        await old.GetModelsAsync(CancellationToken.None);
+        await old.CompleteAsync(null, [], null, false, _ => { }, CancellationToken.None);
         True(false, "404 не превратился в ошибку");
     }
     catch (LlmProxyException error)
@@ -589,12 +589,11 @@ await CheckAsync("агент: ошибка посредника в потоке 
         Equal(error.Code, "not_deployed");
     }
 
-    Equal(LlmProxyClient.BuildEndpoint("amk-horizon.ru/"), "https://amk-horizon.ru/front.php");
-    Equal(LlmProxyClient.BuildEndpoint("http://127.0.0.1:8765"), "http://127.0.0.1:8765/front.php");
-    Equal(LlmProxyClient.BuildEndpoint("https://amk-horizon.ru/las/LlmController.php"), "https://amk-horizon.ru/las/LlmController.php");
+    Equal(LlmProxyClient.BuildEndpoint("amk-horizon.ru/las/LlmController.php/"), "https://amk-horizon.ru/las/LlmController.php");
+    Equal(LlmProxyClient.BuildEndpoint("http://127.0.0.1:8765/LlmController.php"), "http://127.0.0.1:8765/LlmController.php");
     try
     {
-        LlmProxyClient.BuildEndpoint("http://amk-horizon.ru");
+        LlmProxyClient.BuildEndpoint("http://amk-horizon.ru/las-viewer/LlmController.php");
         True(false, "адрес без https принят");
     }
     catch (ArgumentException)
@@ -602,14 +601,13 @@ await CheckAsync("агент: ошибка посредника в потоке 
     }
 });
 
-await CheckAsync("агент: цикл — вызов инструмента, результат модели, ответ; токен в заголовке", async () =>
+await CheckAsync("агент: цикл — вызов инструмента, результат модели, ответ", async () =>
 {
     List<System.Text.Json.Nodes.JsonObject> bodies = [];
     int call = 0;
     using FakeProxy proxy = new((request, body) =>
     {
-        True(request.Headers.Authorization?.Parameter == "amkdv_secret", "нет токена в Authorization");
-        True(request.RequestUri!.Query == "?c=Llm&a=chat", request.RequestUri.Query);
+        True(request.RequestUri!.Query == "?a=chat", request.RequestUri.Query);
         bodies.Add((System.Text.Json.Nodes.JsonObject)System.Text.Json.Nodes.JsonNode.Parse(body)!);
         return ++call == 1
             ? FakeProxy.Sse(
@@ -621,7 +619,7 @@ await CheckAsync("агент: цикл — вызов инструмента, р
                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"cost_rub\":0.25}}",
                 "data: [DONE]");
     });
-    using LlmProxyClient client = new("amk-horizon.ru", "amkdv_secret", proxy);
+    using LlmProxyClient client = new("amk-horizon.ru", proxy);
     FakeTools tools = new();
     RecordingObserver observer = new();
     AgentSession session = new();
@@ -644,29 +642,22 @@ await CheckAsync("агент: цикл — вызов инструмента, р
     True(bodies[0]["tools"]!.AsArray().Count == 1, "инструменты не переданы");
 });
 
-await CheckAsync("агент: без настроек — общий доступ по ключу программы, токен необязателен", async () =>
+await CheckAsync("агент: без настроек — посредник компании и ключ программы", async () =>
 {
-    True(new AgentSettings().IsConfigured, "настройки по умолчанию должны работать без токена");
     Equal(LlmProxyClient.BuildEndpoint(new AgentSettings().ServerUrl), "https://amk-horizon.ru/las-viewer/LlmController.php");
 
     HttpRequestMessage? seen = null;
     using FakeProxy proxy = new((request, _) =>
     {
         seen = request;
-        return FakeProxy.Json(System.Net.HttpStatusCode.OK,
-            "{\"success\":true,\"shared\":true,\"user\":{\"username\":\"las-viewer\",\"full_name\":\"Общий доступ\"},\"default_model\":\"deepseek/deepseek-v3.2-exp\","
-            + "\"limits\":{\"requests_per_hour\":300,\"requests_last_hour\":0,\"daily_budget_rub\":1000,\"spent_today_rub\":0},\"configured\":true}");
+        return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Да\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]");
     });
-    using LlmProxyClient shared = new(AgentSettings.DefaultServerUrl, null, proxy);
-    ProxyStatus status = await shared.GetStatusAsync(CancellationToken.None);
-    True(status.Shared, "общий доступ не распознан");
-    Equal(status.DefaultModel, "deepseek/deepseek-v3.2-exp");
-    True(seen!.Headers.GetValues("X-Client-Key").Single() == AgentSettings.BuiltInClientKey, "нет ключа программы");
-    True(seen.Headers.Authorization is null && !seen.Headers.Contains("X-Api-Token"), "без токена не должно быть заголовков токена");
-
-    using LlmProxyClient personal = new(AgentSettings.DefaultServerUrl, "amkdv_x", proxy);
-    await personal.GetStatusAsync(CancellationToken.None);
-    True(seen.Headers.Authorization?.Parameter == "amkdv_x" && seen.Headers.Contains("X-Client-Key"), "токен и ключ программы не переданы вместе");
+    using LlmProxyClient client = new(AgentSettings.DefaultServerUrl, proxy);
+    ChatCompletion completion = await client.CompleteAsync(AgentSettings.DefaultModel, [], null, false, _ => { }, CancellationToken.None);
+    Equal(completion.Content, "Да");
+    Equal(seen!.RequestUri!.ToString(), AgentSettings.DefaultServerUrl + "?a=chat");
+    True(seen.Headers.GetValues("X-Client-Key").Single() == AgentSettings.BuiltInClientKey, "нет ключа программы");
+    True(seen.Headers.Authorization is null, "лишний заголовок Authorization");
 });
 
 await CheckAsync("агент: оборванный поток — продолжение с места обрыва, повтор, ошибка после повторных обрывов", async () =>
@@ -694,7 +685,7 @@ await CheckAsync("агент: оборванный поток — продолж
         True(messages[^1]!["content"]!.GetValue<string>().Contains("оборвался"), "нет просьбы продолжить");
         return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"конец.\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]");
     });
-    using LlmProxyClient client = new("amk-horizon.ru", null, continuing);
+    using LlmProxyClient client = new("amk-horizon.ru", continuing);
     AgentSession session = new();
     RecordingObserver observer = new();
     string answer = await session.AskAsync("?", string.Empty, client, null, new FakeTools(), observer, CancellationToken.None);
@@ -707,7 +698,7 @@ await CheckAsync("агент: оборванный поток — продолж
     using FakeProxy empty = new((_, _) => ++retries == 1
         ? FakeProxy.Sse(": ping")
         : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Готово\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
-    using LlmProxyClient retryClient = new("amk-horizon.ru", null, empty);
+    using LlmProxyClient retryClient = new("amk-horizon.ru", empty);
     RecordingObserver retryObserver = new();
     Equal(await new AgentSession().AskAsync("?", string.Empty, retryClient, null, new FakeTools(), retryObserver, CancellationToken.None), "Готово");
     True(retryObserver.Events[0].StartsWith("notice ", StringComparison.Ordinal), "нет сообщения о повторе");
@@ -718,14 +709,14 @@ await CheckAsync("агент: оборванный поток — продолж
     using FakeProxy throttled = new((_, _) => ++busy == 1
         ? FakeProxy.Sse("data: {\"error\":{\"code\":\"TOO_MANY_REQUESTS\",\"message\":\"Провайдер модели ограничил частоту запросов.\"}}")
         : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Есть\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
-    using LlmProxyClient throttledClient = new("amk-horizon.ru", null, throttled);
+    using LlmProxyClient throttledClient = new("amk-horizon.ru", throttled);
     RecordingObserver busyObserver = new();
     Equal(await new AgentSession().AskAsync("?", string.Empty, throttledClient, null, new FakeTools(), busyObserver, CancellationToken.None), "Есть");
     True(busyObserver.Events[0].Contains("перегружен"), "нет сообщения о перегрузке провайдера");
 
     // Обрывы подряд — понятная ошибка, история чистая.
     using FakeProxy always = new((_, _) => FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"…\"}}]}"));
-    using LlmProxyClient failing = new("amk-horizon.ru", null, always);
+    using LlmProxyClient failing = new("amk-horizon.ru", always);
     AgentSession failed = new();
     try
     {
@@ -746,7 +737,7 @@ await CheckAsync("агент: прерванный вопрос не остав�
     using FakeProxy proxy = new((_, _) => FakeProxy.Sse(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"curve_stats\",\"arguments\":\"{}\"}}]}}]}",
         "data: [DONE]"));
-    using LlmProxyClient client = new("amk-horizon.ru", "t", proxy);
+    using LlmProxyClient client = new("amk-horizon.ru", proxy);
     AgentSession session = new();
     FakeTools tools = new() { OnCall = cancel.Cancel };
     try
@@ -780,7 +771,7 @@ await CheckAsync("агент: лимит шагов — после него ин
             ? FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"list_files\",\"arguments\":\"{}\"}}]}}]}", "data: [DONE]")
             : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Итог\"}}]}", "data: [DONE]");
     });
-    using LlmProxyClient client = new("amk-horizon.ru", "t", proxy);
+    using LlmProxyClient client = new("amk-horizon.ru", proxy);
     AgentSession session = new();
     string answer = await session.AskAsync("?", string.Empty, client, null, new FakeTools(), new RecordingObserver(), CancellationToken.None);
     Equal(answer, "Итог");
@@ -790,7 +781,7 @@ await CheckAsync("агент: лимит шагов — после него ин
 
 Check("агент: модели — большие и малые, старый выбор заменяется моделью по умолчанию", () =>
 {
-    Same(AgentSettings.Models.Where(model => model.Large).Select(model => model.Id), ["deepseek/deepseek-v4-flash", "google/gemini-3.8-flash"]);
+    Same(AgentSettings.Models.Where(model => model.Large).Select(model => model.Id), ["google/gemini-3.8-flash", "deepseek/deepseek-v4-flash"]);
     Same(AgentSettings.Models.Where(model => !model.Large).Select(model => model.Id), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna-pro"]);
     Equal(new AgentSettings().Model, AgentSettings.DefaultModel);
 
@@ -808,6 +799,14 @@ Check("агент: модели — большие и малые, старый �
 
         File.WriteAllText(store.SettingsPath, "{\"Model\":\"google/gemini-3.8-flash\"}");
         Equal(store.Load().Model, "google/gemini-3.8-flash");
+
+        // Сделанный пользователем выбор сохраняется и после смены модели по умолчанию.
+        File.WriteAllText(store.SettingsPath, "{\"Model\":\"deepseek/deepseek-v4-flash\"}");
+        Equal(store.Load().Model, "deepseek/deepseek-v4-flash");
+
+        // Без файла настроек — первый запуск — модель по умолчанию, Gemini.
+        File.Delete(store.SettingsPath);
+        Equal(store.Load().Model, "google/gemini-3.8-flash");
     }
     finally
     {
@@ -818,19 +817,26 @@ Check("агент: модели — большие и малые, старый �
     }
 });
 
-Check("агент: токен на диске только зашифрованным", () =>
+Check("агент: настройки — модель сохраняется, адрес сайта прежних версий заменяется адресом посредника", () =>
 {
     string directory = Path.Combine(Path.GetTempPath(), "lasviewer-checks-" + Guid.NewGuid().ToString("N"));
     try
     {
         AgentSettingsStore store = new(Path.Combine(directory, "agent-settings.json"));
-        AgentSettings settings = new() { ServerUrl = "https://amk-horizon.ru", Token = "amkdv_0123456789abcdef", Model = "openai/gpt-6-luna-pro" };
-        True(store.TrySave(settings), "настройки не сохранены");
-        string text = File.ReadAllText(store.SettingsPath);
-        True(!text.Contains("0123456789abcdef"), "токен записан открытым текстом");
+        True(store.TrySave(new AgentSettings { Model = "openai/gpt-6-luna-pro" }), "настройки не сохранены");
         AgentSettings loaded = store.Load();
-        Equal(loaded.Token, "amkdv_0123456789abcdef");
         Equal(loaded.Model, "openai/gpt-6-luna-pro");
+        Equal(loaded.ServerUrl, AgentSettings.DefaultServerUrl);
+
+        // Учебный посредник на этом компьютере остаётся; адрес сайта через front.php и
+        // персональный токен прежних версий — нет.
+        File.WriteAllText(store.SettingsPath, "{\"ServerUrl\":\"http://127.0.0.1:8765/LlmController.php\"}");
+        Equal(store.Load().ServerUrl, "http://127.0.0.1:8765/LlmController.php");
+        foreach (string old in new[] { "amk-horizon.ru", "https://amk-horizon.ru/front.php" })
+        {
+            File.WriteAllText(store.SettingsPath, "{\"ServerUrl\":\"" + old + "\",\"ProtectedToken\":\"AQAAAN\"}");
+            Equal(store.Load().ServerUrl, AgentSettings.DefaultServerUrl);
+        }
     }
     finally
     {

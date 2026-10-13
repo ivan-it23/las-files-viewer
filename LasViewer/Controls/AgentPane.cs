@@ -78,6 +78,9 @@ public sealed partial class AgentPane : UserControl
     /// </summary>
     private volatile bool runScriptsWithoutAsking;
 
+    /// <summary>Пользователь нажал «Свернуть панель агента»; сворачивает её окно, которому принадлежит колонка.</summary>
+    public event EventHandler? HideRequested;
+
     public AgentPane()
     {
         settings = store.Load();
@@ -87,15 +90,20 @@ public sealed partial class AgentPane : UserControl
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        // Заголовок: название и новый диалог.
+        // Заголовок: название, новый диалог и сворачивание панели.
         Grid header = new() { Background = HeaderBackground, Padding = new Thickness(12, 6, 6, 6), ColumnSpacing = 2 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(new TextBlock { Text = "Агент", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
         Button newChat = IconButton("", "Новый диалог");
         newChat.Click += (_, _) => NewConversation();
         Grid.SetColumn(newChat, 1);
         header.Children.Add(newChat);
+        Button hide = IconButton("", "Свернуть панель агента");
+        hide.Click += (_, _) => HideRequested?.Invoke(this, EventArgs.Empty);
+        Grid.SetColumn(hide, 2);
+        header.Children.Add(hide);
         root.Children.Add(header);
 
         scroller = new ScrollViewer

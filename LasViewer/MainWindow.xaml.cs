@@ -31,6 +31,7 @@ public sealed partial class MainWindow : Window
     private readonly UpdateFlow updateFlow;
     private readonly CancellationTokenSource lifetime = new();
     private readonly IReadOnlyList<string> startupPaths;
+    private readonly Dictionary<ColumnDefinition, (GridLength Width, double MinWidth)> paneWidths = [];
     private OpenedDocument? active;
     private bool engineStopped;
     private bool closeConfirmed;
@@ -714,6 +715,46 @@ public sealed partial class MainWindow : Window
 
         menu.ShowAt(container, new FlyoutShowOptions { Position = e.GetPosition(container) });
         e.Handled = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Боковые панели
+    // ------------------------------------------------------------------
+
+    private void HideProjectPaneButton_Click(object sender, RoutedEventArgs e) =>
+        SetPaneCollapsed(ProjectColumn, ProjectPane, ProjectStrip, collapsed: true);
+
+    private void ShowProjectPaneButton_Click(object sender, RoutedEventArgs e) =>
+        SetPaneCollapsed(ProjectColumn, ProjectPane, ProjectStrip, collapsed: false);
+
+    private void AgentPanel_HideRequested(object? sender, EventArgs e) =>
+        SetPaneCollapsed(AgentColumn, AgentPaneBorder, AgentStrip, collapsed: true);
+
+    private void ShowAgentPaneButton_Click(object sender, RoutedEventArgs e) =>
+        SetPaneCollapsed(AgentColumn, AgentPaneBorder, AgentStrip, collapsed: false);
+
+    /// <summary>
+    /// Свёрнутая панель уступает место планшету и остаётся узкой полосой с
+    /// кнопкой «Показать». Содержимое только скрывается: дерево проекта и
+    /// диалог с агентом (в том числе идущий ответ) сохраняются.
+    /// </summary>
+    private void SetPaneCollapsed(ColumnDefinition column, FrameworkElement pane, FrameworkElement strip, bool collapsed)
+    {
+        if (collapsed)
+        {
+            // Ширина до сворачивания запоминается, чтобы вернуть ту же.
+            paneWidths.TryAdd(column, (column.Width, column.MinWidth));
+            column.MinWidth = 0;
+            column.Width = GridLength.Auto;
+        }
+        else if (paneWidths.Remove(column, out (GridLength Width, double MinWidth) saved))
+        {
+            column.Width = saved.Width;
+            column.MinWidth = saved.MinWidth;
+        }
+
+        pane.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        strip.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ------------------------------------------------------------------
