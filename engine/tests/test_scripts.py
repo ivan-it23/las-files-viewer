@@ -27,6 +27,13 @@ try:
 except ImportError:
     HAVE_PACKAGES = False
 
+try:
+    import docx  # noqa: F401
+
+    HAVE_DOCX = True
+except ImportError:
+    HAVE_DOCX = False
+
 needs_packages = unittest.skipUnless(HAVE_PACKAGES, "нет numpy/pandas/matplotlib у этого Python")
 
 
@@ -101,6 +108,33 @@ class ScriptTests(unittest.TestCase):
         self.assertFalse((folder / "input").exists(), "копия данных скважины должна удаляться после запуска")
         csv = (folder / "output" / "статистика.csv").read_bytes()
         self.assertTrue(csv.startswith(b"\xef\xbb\xbf"), "CSV для Excel — с BOM")
+
+    @needs_packages
+    @unittest.skipUnless(HAVE_DOCX, "нет python-docx у этого Python")
+    def test_word_report(self):
+        result = self.run_script(
+            "from docx import Document\n"
+            "from docx.shared import Cm\n"
+            "doc = Document()\n"
+            "doc.add_heading('Зашкалы УЭС', level=1)\n"
+            "table = doc.add_table(rows=1, cols=2, style='Table Grid')\n"
+            "table.rows[0].cells[0].text = 'Кровля, м'\n"
+            "table.rows[0].cells[1].text = 'Подошва, м'\n"
+            "plt.plot(df['RO'], df.index)\n"
+            "doc.add_picture(save_figure('УЭС'), width=Cm(16))\n"
+            "print(save_report(doc, 'отчёт: зашкалы'))\n",
+        )
+        self.assertTrue(result["ok"], result)
+        report = result["result"]
+        self.assertIn("отчёт_ зашкалы.docx", report["output"])
+        self.assertEqual([item["name"] for item in report["files"]], ["отчёт_ зашкалы.docx"])
+
+        from docx import Document
+
+        document = Document(report["files"][0]["path"])
+        self.assertEqual(document.paragraphs[0].text, "Зашкалы УЭС")
+        self.assertEqual(document.tables[0].rows[0].cells[1].text, "Подошва, м")
+        self.assertEqual(len(document.inline_shapes), 1)
 
     @needs_packages
     def test_main_file_and_selected_files(self):

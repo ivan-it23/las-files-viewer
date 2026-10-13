@@ -278,6 +278,12 @@ def main(argv: list[str]) -> int:
             result["tables"].append(file_name)
         return file_name
 
+    def save_report(document: Any, name: str | None = None) -> str:
+        """Сохраняет документ Word (python-docx) в папку результатов и возвращает имя файла."""
+        file_name = _safe_name(name, "отчёт", ".docx")
+        document.save(output_dir / file_name)
+        return file_name
+
     namespace: dict[str, Any] = {
         "__name__": "__main__",
         "np": np,
@@ -290,6 +296,7 @@ def main(argv: list[str]) -> int:
         "OUTPUT_DIR": output_dir,
         "save_figure": save_figure,
         "save_table": save_table,
+        "save_report": save_report,
     }
 
     script_path = run_dir / "script.py"
