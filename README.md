@@ -6,7 +6,7 @@
 
 - пользовательское имя — **«Просмотрщик LAS»**;
 - исполняемый файл — `LasViewer.exe`;
-- версия — `0.4.1`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
+- версия — `0.4.2`: единственный источник — `Version` в `LasViewer/LasViewer.csproj`,
   `__version__` движка обязан с ней совпадать (сверяет `scripts/Build-Installer.ps1`).
 
 План работ и список функций — [`docs/PLAN.md`](docs/PLAN.md), устройство —
