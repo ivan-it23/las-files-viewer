@@ -78,6 +78,23 @@ public sealed class EngineAgentTools(EngineHost engine, IScriptApprover? approve
         return FromEngine(result);
     }
 
+    public async Task<string> GetKnowledgeAsync(string question, CancellationToken cancellationToken)
+    {
+        try
+        {
+            JsonElement result = await engine.InvokeAsync<JsonElement>(
+                "agent.knowledge_context", new { Question = question }, cancellationToken, CallTimeout).ConfigureAwait(false);
+            return result.TryGetProperty("text", out JsonElement text) && text.ValueKind == JsonValueKind.String
+                ? text.GetString() ?? string.Empty
+                : string.Empty;
+        }
+        catch (Exception exception) when (exception is EngineException or TimeoutException)
+        {
+            // Без материалов агент всё равно ответит — по инструментам и поиску в базе знаний.
+            return string.Empty;
+        }
+    }
+
     private async Task<ToolResult> RunScriptAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         if (approver is null || scriptsDirectory is null)

@@ -5,6 +5,10 @@
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), данные и GORIZONT —
 [`docs/DOMAIN.md`](docs/DOMAIN.md), план и функции — [`docs/PLAN.md`](docs/PLAN.md).
 
+Навыки проекта (`.claude/skills/`): `las-domain` — данные компании,
+методичка ВИКИЗ, база знаний агента; `las-verify` — проверка в окне
+приложения (сборка в отдельную папку, UI Automation, снимок только окна).
+
 Обязательно:
 - Пользователь пишет по-русски — отвечать по-русски.
 - Ключ polza.ai не коммитить и не выводить; в `server/LlmController.php`

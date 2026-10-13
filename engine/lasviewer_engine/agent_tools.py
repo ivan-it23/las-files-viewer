@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import bisect
 import math
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from . import knowledge_base, vikiz
 from .las import LasFile
 from .las.parser import index_summary
 from .las_methods import Workspace
@@ -49,6 +51,31 @@ _CURVES = {
     "items": {"type": "string"},
     "description": "Мнемоники кривых, как в списке кривых файла.",
 }
+_PHASE_CURVES = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Только для приборов не ВИКИЗ: кривые разности фаз от короткого зонда к длинному. Для ВИКИЗ кривые "
+        "находятся сами по описаниям и мнемоникам IK05…IK20."
+    ),
+}
+_RESISTIVITY_CURVES = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Только для приборов не ВИКИЗ (например, ЭМК одной частоты): кривые ρк от короткого зонда к длинному. "
+        "Для ВИКИЗ находятся сами (RO05…RO20)."
+    ),
+}
+
+
+def _knowledge_index() -> str:
+    try:
+        return knowledge_base.index_text()
+    except (OSError, knowledge_base.KnowledgeError) as exc:
+        # Испорченная карточка не должна останавливать движок: агент работает и без базы знаний.
+        print(f"База знаний не загружена: {exc}", file=sys.stderr)
+        return "(база знаний недоступна)"
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -195,6 +222,122 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_knowledge",
+            "description": (
+                "Поиск по базе знаний программы: терминология и правила интерпретации из методических "
+                "руководств, которые компания считает эталоном. Словарь и подходящие карточки уже приложены "
+                "к вопросу; ищите, когда их не хватает. Карточку открывает get_knowledge.\nКарточки:\n"
+                + _knowledge_index()
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Слова или мнемоники: «окаймляющая зона», «повторный замер», «IK07»."},
+                    "method": {"type": "string", "description": "Метод, например ВИКИЗ или ЭМК, — чтобы искать только по нему."},
+                    "limit": {"type": "integer", "description": f"Сколько карточек вернуть, по умолчанию {knowledge_base.DEFAULT_RESULTS}."},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_knowledge",
+            "description": (
+                "Полный текст карточки базы знаний по её номеру (например vikiz/kachestvo). Карточка со "
+                "статусом «черновик» не подтверждена — скажите об этом."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "Номер карточки из оглавления или поиска."}},
+                "required": ["id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vikiz_quality",
+            "description": (
+                "Проверка качества записи ВИКИЗ по методическому руководству: шаг записи (не более 0,2 м), "
+                "допустимый диапазон разности фаз 0,2–90° по каждому зонду (отрицательная и почти нулевая Δφ — "
+                "брак), интервалы недостоверной записи, «полка» ρк на пределе пересчёта; с repeat_file_id — "
+                "повторный замер (расхождение не более 3 % для двух длинных и 5 % для трёх коротких зондов). "
+                "Возвращает findings — выводы проверки."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": _FILE_ID,
+                    "top": _TOP,
+                    "bottom": _BOTTOM,
+                    "repeat_file_id": {"type": "string", "description": "Файл повторной записи того же каротажа."},
+                    "phase_curves": _PHASE_CURVES,
+                    "resistivity_curves": _RESISTIVITY_CURVES,
+                },
+                "required": ["file_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vikiz_sounding",
+            "description": (
+                "Кривая зондирования ВИКИЗ на глубине (depth) или в пласте (top–bottom): медианы ρк пяти зондов "
+                "от 0,5 до 2,0 м без недостоверных отсчётов и форма кривой по методичке — ровная, убывает "
+                "(повышающее проникновение), возрастает (понижающее), минимум на промежуточном зонде (признак "
+                "окаймляющей зоны), максимум, немонотонная; оценки ρк длинных и коротких зондов и оговорки "
+                "(маломощный пласт и т. п.). Для пласта задавайте его кровлю и подошву — например из vikiz_layers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": _FILE_ID,
+                    "depth": {"type": "number", "description": "Одна глубина; вместо top/bottom."},
+                    "top": _TOP,
+                    "bottom": _BOTTOM,
+                    "phase_curves": _PHASE_CURVES,
+                    "resistivity_curves": _RESISTIVITY_CURVES,
+                },
+                "required": ["file_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vikiz_layers",
+            "description": (
+                "Пластовая разбивка по ВИКИЗ: границы пластов в максимумах функции вертикального разрешения "
+                "трёх средних зондов, для каждого пласта — ρк зондов и форма кривой "
+                "зондирования (где ρк растёт, где убывает с длиной зонда, где минимум). Плюс сводка по типам. "
+                f"Берите интервал разумной длины: выводится до {vikiz.MAX_LAYERS} пластов."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": _FILE_ID,
+                    "top": _TOP,
+                    "bottom": _BOTTOM,
+                    "min_thickness": {"type": "number", "description": "Минимальная мощность пласта, м. По умолчанию 0,4 (не меньше двух шагов записи)."},
+                    "max_layers": {"type": "integer", "description": f"Сколько пластов вывести, по умолчанию {vikiz.DEFAULT_LAYERS}."},
+                    "phase_curves": _PHASE_CURVES,
+                    "resistivity_curves": _RESISTIVITY_CURVES,
+                },
+                "required": ["file_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": RUN_PYTHON,
             "description": (
                 "Выполняет скрипт Python на компьютере пользователя над данными открытых файлов: расчёты, которых "
@@ -263,6 +406,20 @@ def register(server: Server, workspace: Workspace) -> None:
             get_samples(_file(workspace, file_id), curves, top, bottom, max_points, aggregate),
         "compare_curves": lambda file_id, curve, other_curve, other_file_id=None, top=None, bottom=None: compare_curves(
             _file(workspace, file_id), curve, _file(workspace, other_file_id or file_id), other_curve, top, bottom),
+        "search_knowledge": lambda query, method=None, limit=knowledge_base.DEFAULT_RESULTS: knowledge_base.search(
+            query, method, limit),
+        "get_knowledge": lambda id: knowledge_base.get(id),
+        "vikiz_quality": lambda file_id, top=None, bottom=None, repeat_file_id=None, phase_curves=None,
+        resistivity_curves=None: vikiz.quality(
+            _file(workspace, file_id), top, bottom,
+            _file(workspace, repeat_file_id) if repeat_file_id is not None else None,
+            phase_curves, resistivity_curves),
+        "vikiz_sounding": lambda file_id, depth=None, top=None, bottom=None, phase_curves=None,
+        resistivity_curves=None: vikiz.sounding(
+            _file(workspace, file_id), top, bottom, depth, phase_curves, resistivity_curves),
+        "vikiz_layers": lambda file_id, top=None, bottom=None, min_thickness=None, max_layers=vikiz.DEFAULT_LAYERS,
+        phase_curves=None, resistivity_curves=None: vikiz.layers(
+            _file(workspace, file_id), top, bottom, min_thickness, max_layers, phase_curves, resistivity_curves),
     }
 
     def tools() -> list[dict[str, Any]]:
@@ -280,15 +437,26 @@ def register(server: Server, workspace: Workspace) -> None:
             return {"ok": False, "error": "Аргументы должны быть объектом JSON."}
         try:
             result = handler(**arguments)
-        except ToolError as exc:
-            return {"ok": False, "error": str(exc)}
+        except (ToolError, vikiz.VikizError, knowledge_base.KnowledgeError) as exc:
+            return {"ok": False, "error": knowledge_base.strip_references(str(exc))}
         except TypeError as exc:
             # Лишний или пропущенный аргумент — ошибка модели, а не движка.
             return {"ok": False, "error": f"Неверные аргументы {name}: {exc}"}
-        return {"ok": True, "result": _clean(result)}
+        return {"ok": True, "result": _without_references(_clean(result))}
+
+    def knowledge_context(question: Any = None, methods: Any = None) -> dict[str, Any]:
+        """Материалы к вопросу пользователя: программа кладёт их в системное сообщение."""
+        if methods is None:
+            methods = sorted({name for las in workspace.files.values() for name in _method_names(las)})
+        try:
+            return knowledge_base.context_for(question, methods)
+        except (OSError, knowledge_base.KnowledgeError) as exc:
+            print(f"Материалы к вопросу не подобраны: {exc}", file=sys.stderr)
+            return {"cards": [], "text": ""}
 
     server.methods["agent.tools"] = tools
     server.methods["agent.call"] = call
+    server.methods["agent.knowledge_context"] = knowledge_context
 
 
 # ----------------------------------------------------------------------
@@ -308,6 +476,9 @@ def list_files(workspace: Workspace, include_curves: Any = True) -> dict[str, An
         }
         if include_curves is not False:
             entry["curves"] = [_curve_brief(curve) for curve in las.curves[1:]]
+        methods = _methods(las)
+        if methods:
+            entry["methods"] = methods
         files.append(entry)
     return {"files": files}
 
@@ -620,6 +791,41 @@ def _curve_names(curves: Any) -> list[str]:
     if len(curves) > MAX_CURVES_PER_CALL:
         raise ToolError(f"Не больше {MAX_CURVES_PER_CALL} кривых за вызов.")
     return curves
+
+
+_METHOD_HINTS = {
+    "ВИКИЗ": "ВИКИЗ — инструменты vikiz_quality, vikiz_sounding, vikiz_layers; карточки vikiz/*",
+    "ЭМК": "ЭМК — карточка emk/primenimost (черновик)",
+}
+
+
+def _method_names(las: LasFile) -> list[str]:
+    """Методы файла, для которых в программе есть инструменты и карточки знаний."""
+    found = []
+    try:
+        if not vikiz.find_zonds(las).custom:
+            found.append("ВИКИЗ")
+    except vikiz.VikizError:
+        pass
+    descriptions = " ".join((curve.description or "") for curve in las.curves[1:]).upper()
+    if "ЭМК" in descriptions:
+        found.append("ЭМК")
+    return found
+
+
+def _methods(las: LasFile) -> list[str]:
+    return [_METHOD_HINTS[name] for name in _method_names(las)]
+
+
+def _without_references(value: Any) -> Any:
+    """Результат для модели — без ссылок на страницы источника: сноски в ответе не нужны."""
+    if isinstance(value, str):
+        return knowledge_base.strip_references(value)
+    if isinstance(value, dict):
+        return {key: _without_references(item) for key, item in value.items() if key not in ("pages", "source")}
+    if isinstance(value, list):
+        return [_without_references(item) for item in value]
+    return value
 
 
 def _curve_brief(curve) -> dict[str, Any]:

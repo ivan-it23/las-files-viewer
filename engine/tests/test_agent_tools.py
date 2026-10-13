@@ -68,7 +68,10 @@ class AgentToolTests(unittest.TestCase):
     def test_tool_descriptions_are_valid_openai_functions(self):
         tools = self.server.methods["agent.tools"]()
         names = {tool["function"]["name"] for tool in tools}
-        self.assertEqual(names, {"list_files", "get_file_info", "curve_stats", "find_intervals", "get_samples", "compare_curves", "run_python"})
+        self.assertEqual(names, {
+            "list_files", "get_file_info", "curve_stats", "find_intervals", "get_samples", "compare_curves",
+            "search_knowledge", "get_knowledge", "vikiz_quality", "vikiz_sounding", "vikiz_layers", "run_python",
+        })
         for tool in tools:
             self.assertEqual(tool["type"], "function")
             self.assertEqual(tool["function"]["parameters"]["type"], "object")

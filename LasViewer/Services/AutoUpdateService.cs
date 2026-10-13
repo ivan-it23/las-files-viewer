@@ -19,23 +19,22 @@ internal sealed record UpdateCheckResult(
 }
 
 /// <summary>
-/// Проверка, загрузка и запуск обновления. Устроена как в «Визуализации данных»
-/// и берёт обновления из той же папки на сайте.
+/// Проверка, загрузка и запуск обновления. Устроена как в «Визуализации данных».
 /// </summary>
 /// <remarks>
-/// Сайт ivanbohg.beget.tech отвечает только по HTTP. Контрольная сумма SHA-256
-/// приходит в том же файле, что и имя установщика, поэтому она защищает от
-/// недокачанного или повреждённого файла, но не от подмены в сети: подменивший
-/// установщик подменит и сумму.
+/// Обновления лежат рядом с посредником агента на amk-horizon.ru и берутся по
+/// HTTPS: подлинность файлов обеспечивает сертификат сайта. Контрольная сумма
+/// SHA-256 из описания защищает от недокачанного или повреждённого файла.
 /// </remarks>
 internal sealed class AutoUpdateService : IDisposable
 {
     /// <summary>
-    /// Каталог обновлений на сайте (<c>public_html/FilesForProgramVisualisation</c>),
-    /// общий с другими приложениями компании. Туда выкладываются установщик и
+    /// Каталог обновлений на сайте компании (<c>amk-horizon.ru/public_html/las-viewer</c>,
+    /// рядом с <c>LlmController.php</c>). Туда выкладываются установщик и
     /// <see cref="DescriptorFileName"/>, которые создаёт <c>scripts\Build-Installer.ps1</c>.
+    /// До 0.4.3 каталогом был <c>http://ivanbohg.beget.tech/FilesForProgramVisualisation/</c>.
     /// </summary>
-    public static readonly Uri UpdateRoot = new("http://ivanbohg.beget.tech/FilesForProgramVisualisation/", UriKind.Absolute);
+    public static readonly Uri UpdateRoot = new("https://amk-horizon.ru/las-viewer/", UriKind.Absolute);
 
     public const string DescriptorFileName = "las-viewer-version.txt";
 

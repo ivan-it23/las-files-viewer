@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.RegularExpressions;
+using AMK.LasViewer.Agent;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -9,9 +11,10 @@ using Windows.UI;
 namespace AMK.LasViewer.App.Controls;
 
 /// <summary>
-/// Разметка ответов агента: заголовки, списки, таблицы, блоки кода, жирный,
-/// курсив и код в строке. Полный Markdown не нужен — модели велено писать
-/// коротко, а этого набора хватает, чтобы ответ читался.
+/// Разметка ответов агента: заголовки, списки, таблицы, блоки кода,
+/// разделители, жирный, курсив, код в строке и экранирование (<c>\*</c>).
+/// Формулы LaTeX переводятся в обычный текст (<see cref="MathText"/>): панель
+/// их не рисует. Полный Markdown не нужен — модели велено писать коротко.
 /// </summary>
 internal static partial class MarkdownView
 {
@@ -20,10 +23,15 @@ internal static partial class MarkdownView
     private static readonly SolidColorBrush TableHeader = new(Color.FromArgb(0xFF, 0xF3, 0xF6, 0xFA));
     private static readonly FontFamily Monospace = new("Consolas");
 
+    private static readonly SolidColorBrush RuleBrush = new(Color.FromArgb(0xFF, 0xD6, 0xD6, 0xD6));
+
+    /// <summary>Экранированный символ Markdown временно заменяется знаком из личной области Unicode.</summary>
+    private const char EscapeBase = '\uE000';
+
     public static FrameworkElement Render(string markdown)
     {
         StackPanel root = new() { Spacing = 6 };
-        string[] lines = markdown.Replace("\r\n", "\n").Split('\n');
+        string[] lines = Prepare(markdown.Replace("\r\n", "\n")).Split('\n');
         int index = 0;
         while (index < lines.Length)
         {
@@ -78,6 +86,13 @@ internal static partial class MarkdownView
                 continue;
             }
 
+            if (HorizontalRule().IsMatch(trimmed))
+            {
+                root.Children.Add(new Border { Height = 1, Background = RuleBrush, Margin = new Thickness(0, 4, 0, 4) });
+                index++;
+                continue;
+            }
+
             if (Heading().Match(trimmed) is { Success: true } heading)
             {
                 RichTextBlock block = Text(heading.Groups[2].Value);
@@ -99,7 +114,7 @@ internal static partial class MarkdownView
                     Grid row = new() { Margin = new Thickness(Math.Min(indent, 8) * 6, 0, 0, 0), ColumnSpacing = 6 };
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    row.Children.Add(new TextBlock { Text = marker, FontSize = 13 });
+                    row.Children.Add(new TextBlock { Text = Restore(marker), FontSize = 13 });
                     RichTextBlock text = Text(next.Groups[3].Value);
                     Grid.SetColumn(text, 1);
                     row.Children.Add(text);
@@ -119,6 +134,7 @@ internal static partial class MarkdownView
                    && !lines[index].Trim().StartsWith("```", StringComparison.Ordinal)
                    && !lines[index].Trim().StartsWith('|')
                    && !Heading().IsMatch(lines[index].Trim())
+                   && !HorizontalRule().IsMatch(lines[index].Trim())
                    && !ListItem().IsMatch(lines[index]))
             {
                 paragraph.Add(lines[index].Trim());
@@ -129,6 +145,37 @@ internal static partial class MarkdownView
         }
 
         return root;
+    }
+
+    /// <summary>
+    /// Вне блоков кода: формулы LaTeX — в текст, экранированные символы
+    /// (<c>\*</c>, <c>\|</c>, <c>\_</c>…) — в знаки, которые разметка не трогает.
+    /// </summary>
+    private static string Prepare(string markdown)
+    {
+        string[] parts = markdown.Split("```");
+        for (int i = 0; i < parts.Length; i += 2)
+        {
+            parts[i] = Escaped().Replace(MathText.ToPlain(parts[i]), match => ((char)(EscapeBase + match.Groups[1].Value[0])).ToString());
+        }
+
+        return string.Join("```", parts);
+    }
+
+    private static string Restore(string text)
+    {
+        if (text.All(c => c < EscapeBase || c > EscapeBase + 0x7F))
+        {
+            return text;
+        }
+
+        StringBuilder builder = new(text.Length);
+        foreach (char c in text)
+        {
+            builder.Append(c >= EscapeBase && c <= EscapeBase + 0x7F ? (char)(c - EscapeBase) : c);
+        }
+
+        return builder.ToString();
     }
 
     private static RichTextBlock Text(string text)
@@ -152,23 +199,23 @@ internal static partial class MarkdownView
         {
             if (match.Index > position)
             {
-                yield return new Run { Text = text[position..match.Index] };
+                yield return new Run { Text = Restore(text[position..match.Index]) };
             }
 
             if (match.Groups["bold"].Success)
             {
                 Bold bold = new();
-                bold.Inlines.Add(new Run { Text = match.Groups["bold"].Value });
+                bold.Inlines.Add(new Run { Text = Restore(match.Groups["bold"].Value) });
                 yield return bold;
             }
             else if (match.Groups["code"].Success)
             {
-                yield return new Run { Text = match.Groups["code"].Value, FontFamily = Monospace };
+                yield return new Run { Text = Restore(match.Groups["code"].Value), FontFamily = Monospace };
             }
             else
             {
                 Italic italic = new();
-                italic.Inlines.Add(new Run { Text = match.Groups["italic"].Value });
+                italic.Inlines.Add(new Run { Text = Restore(match.Groups["italic"].Value) });
                 yield return italic;
             }
 
@@ -177,7 +224,7 @@ internal static partial class MarkdownView
 
         if (position < text.Length)
         {
-            yield return new Run { Text = text[position..] };
+            yield return new Run { Text = Restore(text[position..]) };
         }
     }
 
@@ -243,4 +290,10 @@ internal static partial class MarkdownView
 
     [GeneratedRegex(@"\*\*(?<bold>.+?)\*\*|`(?<code>[^`]+)`|(?<![\w*])[*_](?<italic>[^*_\s][^*_]*?)[*_](?![\w*])")]
     private static partial Regex InlineMarkup();
+
+    [GeneratedRegex(@"^(?:-{3,}|\*{3,}|_{3,})$")]
+    private static partial Regex HorizontalRule();
+
+    [GeneratedRegex(@"\\([\\`*_{}\[\]()#+\-.!|<>~])")]
+    private static partial Regex Escaped();
 }

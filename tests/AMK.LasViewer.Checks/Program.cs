@@ -779,6 +779,44 @@ await CheckAsync("агент: лимит шагов — после него ин
     Equal(choices[^1], "none");
 });
 
+await CheckAsync("агент: методические материалы — к каждому вопросу в системном сообщении", async () =>
+{
+    List<string> systems = [];
+    using FakeProxy proxy = new((_, body) =>
+    {
+        systems.Add(System.Text.Json.Nodes.JsonNode.Parse(body)!["messages"]!.AsArray()[0]!["content"]!.GetValue<string>());
+        return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Ответ\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]");
+    });
+    using LlmProxyClient client = new("amk-horizon.ru", proxy);
+    FakeTools tools = new() { Knowledge = "### Словарь терминов\nρк — кажущееся сопротивление" };
+    await new AgentSession().AskAsync("Опиши файл", "Открыт f1", client, null, tools, new RecordingObserver(), CancellationToken.None);
+    Same(tools.KnowledgeQuestions, ["Опиши файл"]);
+    True(systems[0].Contains("Методические материалы к вопросу") && systems[0].Contains("ρк — кажущееся сопротивление"),
+        "материалы не попали в системное сообщение");
+    True(systems[0].IndexOf("Методические материалы", StringComparison.Ordinal) < systems[0].IndexOf("Сейчас в программе", StringComparison.Ordinal),
+        "материалы должны стоять перед описанием открытых файлов");
+    True(!AgentPrompt.Build("x").Contains("Методические материалы к вопросу (база знаний"), "без материалов раздела быть не должно");
+    True(AgentPrompt.Build("x").Contains("ВСЕГДА опирайтесь на методические материалы"), "нет правила об обязательных материалах");
+    True(!AgentPrompt.Build("x").Contains("с. 62"), "в правилах не должно быть примера сноски");
+});
+
+Check("агент: формулы LaTeX в ответе — обычный текст", () =>
+{
+    // Строки из ответа Gemini 3.8 Flash на скважине 51 (снимок пользователя 2026-10-13).
+    Equal(MathText.ToPlain(@"Понижающее проникновение ($\rho_{\text{зп}} < \rho_{\text{п}}$): монотонный рост $\rho_{\text{к}}$"),
+        "Понижающее проникновение (ρзп < ρп): монотонный рост ρк");
+    Equal(MathText.ToPlain(@"Допустимый диапазон $\Delta\varphi$ (0,2–90°): $\Delta\varphi < 0,2^\circ$"),
+        "Допустимый диапазон Δφ (0,2–90°): Δφ < 0,2°");
+    Equal(MathText.ToPlain(@"$h$, м и $\rho_{\text{к}}$ зондов"), "h, м и ρк зондов");
+    Equal(MathText.ToPlain(@"Модель забыла доллары: \rho_{\text{п}} \approx 8 Ом·м"), "Модель забыла доллары: ρп ≈ 8 Ом·м");
+    Equal(MathText.ToPlain(@"$S = \frac{r_{оз} - r_{зп}}{\rho_{оз}}$, $10^{-3}$, $K_{\text{п}}^{2}$"), "S = (rоз - rзп)/ρоз, 10⁻³, Kп²");
+    Equal(MathText.ToPlain(@"$$P_н = a \cdot K_в^{-n}$$"), "Pн = a · Kв⁻ⁿ");
+    // Не формулы — не трогать.
+    Equal(MathText.ToPlain(@"Путь C:\Users\Admin\scripts и \*звёздочка\*"), @"Путь C:\Users\Admin\scripts и \*звёздочка\*");
+    Equal(MathText.ToPlain(@"скобки \(не формула\)"), @"скобки \(не формула\)");
+    Equal(MathText.ToPlain("Расход 2,52 ₽, без формул"), "Расход 2,52 ₽, без формул");
+});
+
 Check("агент: модели — большие и малые, старый выбор заменяется моделью по умолчанию", () =>
 {
     Same(AgentSettings.Models.Where(model => model.Large).Select(model => model.Id), ["google/gemini-3.8-flash", "deepseek/deepseek-v4-flash"]);
@@ -1077,6 +1115,16 @@ internal sealed class FakeTools : IAgentToolExecutor
     public List<string> Calls { get; } = [];
 
     public Action? OnCall { get; init; }
+
+    public string Knowledge { get; init; } = string.Empty;
+
+    public List<string> KnowledgeQuestions { get; } = [];
+
+    public Task<string> GetKnowledgeAsync(string question, CancellationToken cancellationToken)
+    {
+        KnowledgeQuestions.Add(question);
+        return Task.FromResult(Knowledge);
+    }
 
     public Task<System.Text.Json.Nodes.JsonArray> GetToolsAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new System.Text.Json.Nodes.JsonArray(

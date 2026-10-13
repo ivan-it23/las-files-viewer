@@ -95,6 +95,13 @@ LAS-файлы программа не изменяет.
 станции (`engine/lasviewer_engine/agent_tools.py`), модель получает только их
 результаты.
 
+Терминологию и правила интерпретации агент берёт из базы знаний программы —
+`engine/lasviewer_engine/knowledge/` (карточки по методическому руководству
+ВИКИЗ; формат — `knowledge/README.md`). Словарь и подходящие карточки
+прикладываются к каждому вопросу; ссылок на методичку в ответах нет. Проверку
+качества записи ВИКИЗ, кривую зондирования и разбивку на пласты по правилам
+методички считает движок (`vikiz.py`), а не модель.
+
 Для расчётов и графиков агент пишет скрипты Python (`run_python`). Каждый
 скрипт пользователь видит и подтверждает; скрипт выполняется отдельным
 процессом движка без сети и без права писать вне своей папки, графики
@@ -127,6 +134,8 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-Installer.ps1
 
 В `installer\Output` появятся `LasViewer-Setup-<версия>.exe` и
 `las-viewer-version.txt`. Оба файла выкладываются на хостинге в
-`ivanbohg.beget.tech/public_html/FilesForProgramVisualisation` — рядом с
-обновлениями других приложений; автообновление берёт их по адресу
-`http://ivanbohg.beget.tech/FilesForProgramVisualisation/`.
+`amk-horizon.ru/public_html/las-viewer` — рядом с `LlmController.php`;
+автообновление берёт их по адресу `https://amk-horizon.ru/las-viewer/`.
+Версии до 0.4.2 включительно проверяют старый каталог
+`http://ivanbohg.beget.tech/FilesForProgramVisualisation/` — первую версию с
+новым адресом выложить и туда, чтобы они обновились.

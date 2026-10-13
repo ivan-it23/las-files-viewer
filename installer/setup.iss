@@ -25,7 +25,7 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppCopyright={#MyAppCopyright}
-AppUpdatesURL=http://ivanbohg.beget.tech/FilesForProgramVisualisation/
+AppUpdatesURL=https://amk-horizon.ru/las-viewer/
 
 PrivilegesRequired=admin
 DefaultDirName={autopf}\{#MyAppName}

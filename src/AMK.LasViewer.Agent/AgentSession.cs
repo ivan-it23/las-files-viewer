@@ -10,6 +10,12 @@ public interface IAgentToolExecutor
 
     /// <summary>Вызов инструмента; результат — строка JSON для модели.</summary>
     Task<ToolResult> CallAsync(string name, string argumentsJson, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Методические материалы к вопросу — словарь терминов и подходящие карточки
+    /// базы знаний. Пусто, если их нет.
+    /// </summary>
+    Task<string> GetKnowledgeAsync(string question, CancellationToken cancellationToken) => Task.FromResult(string.Empty);
 }
 
 /// <summary>Результат инструмента: JSON для модели и признак успеха для пользователя.</summary>
@@ -94,7 +100,11 @@ public sealed class AgentSession
         history.Add(ChatMessage.User(question));
         try
         {
-            return await RunAsync(context, client, model, tools, observer, cancellationToken).ConfigureAwait(false);
+            // Материалы прикладываются к каждому вопросу: модель опирается на
+            // методички, даже если пользователь об этом не просил и сама она
+            // искать не стала бы.
+            string knowledge = await tools.GetKnowledgeAsync(question, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(context, knowledge, client, model, tools, observer, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -113,6 +123,7 @@ public sealed class AgentSession
 
     private async Task<string> RunAsync(
         string context,
+        string knowledge,
         LlmProxyClient client,
         string? model,
         IAgentToolExecutor tools,
@@ -120,7 +131,7 @@ public sealed class AgentSession
         CancellationToken cancellationToken)
     {
         JsonArray toolList = await tools.GetToolsAsync(cancellationToken).ConfigureAwait(false);
-        string system = AgentPrompt.Build(context);
+        string system = AgentPrompt.Build(context, knowledge);
 
         for (int round = 0; ; round++)
         {

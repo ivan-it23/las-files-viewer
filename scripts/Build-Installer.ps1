@@ -11,9 +11,9 @@
     6. Собирает установщик Inno Setup и las-viewer-version.txt.
 
     Установщик и las-viewer-version.txt выкладываются в каталог обновлений на
-    хостинге: ivanbohg.beget.tech/public_html/FilesForProgramVisualisation
-    (http://ivanbohg.beget.tech/FilesForProgramVisualisation/), рядом с
-    файлами обновлений других приложений.
+    хостинге: amk-horizon.ru/public_html/las-viewer
+    (https://amk-horizon.ru/las-viewer/), рядом с посредником агента
+    LlmController.php.
 #>
 param(
     [switch]$SkipPublish,
@@ -205,4 +205,4 @@ Write-Output "Установщик: $installerPath"
 Write-Output "Описание:   $feedPath"
 Write-Output "Версия:     $version"
 Write-Output "SHA-256:    $hash"
-Write-Output 'Выложите оба файла в ivanbohg.beget.tech/public_html/FilesForProgramVisualisation'
+Write-Output 'Выложите оба файла в amk-horizon.ru/public_html/las-viewer (рядом с LlmController.php)'
