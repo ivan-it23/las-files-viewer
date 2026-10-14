@@ -180,6 +180,15 @@ foreach ($relativePath in $requiredPublishedFiles) {
     }
 }
 
+# Версия, которую программа сообщает о себе (AppInfo.Version, проверка
+# обновлений), — из атрибутов сборки. Если они разойдутся с Version, обновлённая
+# программа будет считать себя старой и предлагать обновление при каждом запуске
+# (так было в 0.4.3–0.4.4).
+$publishedVersion = (Get-Item -LiteralPath (Join-Path $publishDirectory 'LasViewer.dll')).VersionInfo.ProductVersion
+if ($publishedVersion -ne $version) {
+    throw "Опубликованный LasViewer.dll сообщает версию $publishedVersion, ожидалась $version. Не задавайте AssemblyVersion, FileVersion и InformationalVersion в LasViewer.csproj."
+}
+
 # --- 6. Установщик и описание обновления ------------------------------------
 & $compilerPath "/DMyAppVersion=$version" $setupScript
 if ($LASTEXITCODE -ne 0) {
