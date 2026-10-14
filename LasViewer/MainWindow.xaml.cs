@@ -24,6 +24,13 @@ public sealed partial class MainWindow : Window
 {
     private static readonly TimeSpan UpdateCheckDelay = TimeSpan.FromSeconds(3);
 
+    /// <summary>Сколько места оставлять планшету, когда боковые панели расширяют.</summary>
+    private const double MinimumCenterWidth = 360;
+
+    private const double DefaultProjectWidth = 250;
+    private const double DefaultAgentWidth = 320;
+    private const double CollapsedPaneWidth = 40;
+
     private readonly EngineHost engine;
     private readonly Project project;
     private readonly DialogService dialogs;
@@ -37,6 +44,10 @@ public sealed partial class MainWindow : Window
     private bool closeConfirmed;
     private bool updatingScaleCombo;
     private bool opening;
+
+    /// <summary>Диалог с агентом развёрнут кнопкой; ширина до разворота — <see cref="agentWidthBeforeExpand"/>.</summary>
+    private bool agentExpanded;
+    private double agentWidthBeforeExpand = DefaultAgentWidth;
 
     public MainWindow(IReadOnlyList<string> startupPaths)
     {
@@ -93,6 +104,18 @@ public sealed partial class MainWindow : Window
         AgentPanel.Dialogs = dialogs;
         AgentPanel.Engine = engine;
         AgentPanel.ContextProvider = DescribeForAgent;
+
+        ProjectSplitter.Column = ProjectColumn;
+        ProjectSplitter.MaximumWidth = () => MaximumPaneWidth(AgentColumn);
+        ProjectSplitter.ResetRequested += (_, _) => ProjectColumn.Width = new GridLength(DefaultProjectWidth);
+        AgentSplitter.Column = AgentColumn;
+        AgentSplitter.MaximumWidth = () => MaximumPaneWidth(ProjectColumn);
+        AgentSplitter.Resized += (_, _) => SetAgentExpanded(false);
+        AgentSplitter.ResetRequested += (_, _) =>
+        {
+            SetAgentExpanded(false);
+            AgentColumn.Width = new GridLength(DefaultAgentWidth);
+        };
 
         AppWindow.Closing += AppWindow_Closing;
         RootGrid.Loaded += RootGrid_Loaded;
@@ -734,6 +757,75 @@ public sealed partial class MainWindow : Window
         SetPaneCollapsed(AgentColumn, AgentPaneBorder, AgentStrip, collapsed: false);
 
     /// <summary>
+    /// «Развернуть диалог»: панель агента занимает всё, что не нужно
+    /// планшету (<see cref="MinimumCenterWidth"/>); повторное нажатие
+    /// возвращает прежнюю ширину.
+    /// </summary>
+    private void AgentPanel_ExpandRequested(object? sender, EventArgs e)
+    {
+        if (agentExpanded)
+        {
+            SetAgentExpanded(false);
+            AgentColumn.Width = new GridLength(agentWidthBeforeExpand);
+            return;
+        }
+
+        agentWidthBeforeExpand = PaneWidth(AgentColumn);
+        SetAgentExpanded(true);
+        AgentColumn.Width = new GridLength(Math.Max(AgentColumn.MinWidth, MaximumPaneWidth(ProjectColumn)));
+    }
+
+    private void SetAgentExpanded(bool expanded)
+    {
+        agentExpanded = expanded;
+        AgentPanel.IsExpanded = expanded;
+    }
+
+    /// <summary>Наибольшая ширина боковой панели, при которой планшету остаётся место.</summary>
+    private double MaximumPaneWidth(ColumnDefinition otherPane) =>
+        WorkGrid.ActualWidth - PaneWidth(otherPane) - MinimumCenterWidth;
+
+    /// <summary>
+    /// Заданная ширина панели; у свёрнутой (Auto) — ширина её полосы (40 в
+    /// MainWindow.xaml). ActualWidth не годится: сразу после сворачивания
+    /// разметка ещё не пересчитана.
+    /// </summary>
+    private static double PaneWidth(ColumnDefinition column) =>
+        column.Width.IsAbsolute ? column.Width.Value : CollapsedPaneWidth;
+
+    /// <summary>
+    /// Окно изменилось: развёрнутый диалог следует за ним, а расширенные
+    /// вручную панели сужаются, чтобы не вытеснить планшет.
+    /// </summary>
+    private void WorkGrid_SizeChanged(object sender, SizeChangedEventArgs e) => FitPanes();
+
+    private void FitPanes()
+    {
+        if (WorkGrid.ActualWidth <= 0)
+        {
+            return;
+        }
+
+        if (AgentPaneBorder.Visibility == Visibility.Visible)
+        {
+            double maximum = Math.Max(AgentColumn.MinWidth, MaximumPaneWidth(ProjectColumn));
+            if (agentExpanded || AgentColumn.Width.Value > maximum)
+            {
+                AgentColumn.Width = new GridLength(maximum);
+            }
+        }
+
+        if (ProjectPane.Visibility == Visibility.Visible)
+        {
+            double maximum = Math.Max(ProjectColumn.MinWidth, MaximumPaneWidth(AgentColumn));
+            if (ProjectColumn.Width.Value > maximum)
+            {
+                ProjectColumn.Width = new GridLength(maximum);
+            }
+        }
+    }
+
+    /// <summary>
     /// Свёрнутая панель уступает место планшету и остаётся узкой полосой с
     /// кнопкой «Показать». Содержимое только скрывается: дерево проекта и
     /// диалог с агентом (в том числе идущий ответ) сохраняются.
@@ -755,6 +847,8 @@ public sealed partial class MainWindow : Window
 
         pane.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         strip.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        (column == AgentColumn ? AgentSplitter : ProjectSplitter).Visibility = pane.Visibility;
+        FitPanes();
     }
 
     // ------------------------------------------------------------------

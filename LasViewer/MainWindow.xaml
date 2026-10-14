@@ -97,8 +97,18 @@
                 Click="CheckUpdatesButton_Click" />
         </Grid>
 
-        <Grid Grid.Row="1" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,1">
-            <!-- Ширины боковых панелей меняет SetPaneCollapsed: свёрнутая панель — узкая полоса с кнопкой. -->
+        <Grid
+            x:Name="WorkGrid"
+            Grid.Row="1"
+            BorderBrush="{StaticResource PanelBorderBrush}"
+            BorderThickness="0,1,0,1"
+            SizeChanged="WorkGrid_SizeChanged">
+            <!--
+                Ширины боковых панелей меняют полосы PaneSplitter на их краях
+                (перетаскивание, двойной щелчок — ширина по умолчанию), кнопка
+                «Развернуть диалог» агента и SetPaneCollapsed: свёрнутая
+                панель — узкая полоса с кнопкой.
+            -->
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="ProjectColumn" Width="250" MinWidth="180" />
                 <ColumnDefinition Width="*" />
@@ -149,6 +159,12 @@
                     TextWrapping="Wrap"
                     Text="Файлы не открыты. Файл → Открыть LAS (Ctrl+O), перетащите LAS-файлы в окно или откройте проект (Ctrl+Shift+O)." />
             </Grid>
+            <controls:PaneSplitter
+                x:Name="ProjectSplitter"
+                Grid.Column="0"
+                HorizontalAlignment="Right"
+                ToolTipService.ToolTip="Потяните, чтобы изменить ширину панели проекта"
+                AutomationProperties.Name="Граница панели проекта" />
             <Border
                 x:Name="ProjectStrip"
                 Grid.Column="0"
@@ -249,8 +265,18 @@
 
             <!-- Агент. -->
             <Border x:Name="AgentPaneBorder" Grid.Column="2" BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1,0,0,0">
-                <controls:AgentPane x:Name="AgentPanel" HideRequested="AgentPanel_HideRequested" />
+                <controls:AgentPane
+                    x:Name="AgentPanel"
+                    HideRequested="AgentPanel_HideRequested"
+                    ExpandRequested="AgentPanel_ExpandRequested" />
             </Border>
+            <controls:PaneSplitter
+                x:Name="AgentSplitter"
+                Grid.Column="2"
+                HorizontalAlignment="Left"
+                GrowsToLeft="True"
+                ToolTipService.ToolTip="Потяните влево, чтобы расширить диалог с агентом"
+                AutomationProperties.Name="Граница панели агента" />
             <Border
                 x:Name="AgentStrip"
                 Grid.Column="2"

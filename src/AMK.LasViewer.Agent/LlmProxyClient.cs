@@ -32,8 +32,8 @@ public sealed class LlmProxyClient : IDisposable
     /// Адрес файла посредника целиком, например
     /// «https://amk-horizon.ru/las-viewer/LlmController.php». Без схемы — https.
     /// </summary>
-    /// <summary>Наибольшая длина ответа модели в токенах (у посредника — MAX_OUTPUT_TOKENS = 8000).</summary>
-    public const int MaxOutputTokens = 8000;
+    /// <summary>Наибольшая длина ответа модели в токенах (у посредника — MAX_OUTPUT_TOKENS = 16000).</summary>
+    public const int MaxOutputTokens = 16000;
 
     public static string BuildEndpoint(string serverUrl)
     {

@@ -48,7 +48,7 @@ const UPSTREAM = 'https://polza.ai/api/v1';
 const MAX_BODY_BYTES = 2097152; // 2 МБ
 const MAX_MESSAGES = 300;
 const MAX_TOOLS = 32;
-const MAX_OUTPUT_TOKENS = 8000;
+const MAX_OUTPUT_TOKENS = 16000;
 const MODELS_CACHE_SECONDS = 3600;
 const STREAM_TIMEOUT_SECONDS = 420;
 

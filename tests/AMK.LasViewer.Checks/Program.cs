@@ -887,9 +887,9 @@ Check("агент: модели — большие и малые, старый �
         File.WriteAllText(store.SettingsPath, "{\"Model\":\"deepseek/deepseek-v4-flash\"}");
         Equal(store.Load().Model, "deepseek/deepseek-v4-flash");
 
-        // Без файла настроек — первый запуск — модель по умолчанию, Gemini.
+        // Без файла настроек — первый запуск — модель по умолчанию, Claude Haiku.
         File.Delete(store.SettingsPath);
-        Equal(store.Load().Model, "google/gemini-3.8-flash");
+        Equal(store.Load().Model, "anthropic/claude-haiku-5.5");
     }
     finally
     {

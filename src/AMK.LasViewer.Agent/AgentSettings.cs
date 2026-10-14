@@ -20,11 +20,11 @@ public sealed class AgentSettings
     public const string BuiltInClientKey = "lasviewer_d9e85fbec598620ac7e99d777aa41f6d";
 
     /// <summary>
-    /// Модель по умолчанию — первая из больших: на запросах с инструментами
-    /// работает стабильнее остальных. Её получает пользователь, который ещё
-    /// не выбирал модель сам (выбор сохраняется только по щелчку в списке).
+    /// Модель по умолчанию — Claude Haiku: дешевле Gemini при том же качестве
+    /// ответов с инструментами. Её получает пользователь, который ещё не
+    /// выбирал модель сам (выбор сохраняется только по щелчку в списке).
     /// </summary>
-    public const string DefaultModel = "google/gemini-3.8-flash";
+    public const string DefaultModel = "anthropic/claude-haiku-5.5";
 
     /// <summary>
     /// Модели агента в том порядке, в каком их видит пользователь: сначала
@@ -35,9 +35,9 @@ public sealed class AgentSettings
     /// </summary>
     public static IReadOnlyList<AgentModel> Models { get; } =
     [
-        new(DefaultModel, "Gemini 3.8 Flash", Large: true),
+        new("google/gemini-3.8-flash", "Gemini 3.8 Flash", Large: true),
         new("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", Large: true),
-        new("anthropic/claude-haiku-5.5", "Claude Haiku 5.5", Large: false),
+        new(DefaultModel, "Claude Haiku 5.5", Large: false),
         new("openai/gpt-6-luna-pro", "GPT-6 Luna Pro", Large: false)
     ];
 

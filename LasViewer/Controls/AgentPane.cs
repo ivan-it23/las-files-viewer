@@ -53,7 +53,11 @@ public sealed partial class AgentPane : UserControl
             ? overridePath
             : Path.Combine(AppInfo.DataDirectory, "agent-settings.json"));
     private readonly AgentSession session = new();
-    private readonly StackPanel messages = new() { Spacing = 14, Padding = new Thickness(12, 12, 12, 16) };
+    /// <summary>
+    /// Лента диалога. В развёрнутой панели строки не растягиваются на всю
+    /// ширину экрана — длинные строки трудно читать, — а лента встаёт по центру.
+    /// </summary>
+    private readonly StackPanel messages = new() { Spacing = 16, Padding = new Thickness(14, 14, 14, 18), MaxWidth = 900 };
     private readonly ScrollViewer scroller;
     private readonly TextBox input;
     private readonly Button sendButton;
@@ -81,6 +85,25 @@ public sealed partial class AgentPane : UserControl
     /// <summary>Пользователь нажал «Свернуть панель агента»; сворачивает её окно, которому принадлежит колонка.</summary>
     public event EventHandler? HideRequested;
 
+    /// <summary>Пользователь нажал «Развернуть диалог» или «Вернуть ширину»; ширину колонки меняет окно.</summary>
+    public event EventHandler? ExpandRequested;
+
+    private readonly Button expandButton = IconButton("", "Развернуть диалог");
+
+    /// <summary>Панель развёрнута окном — кнопка предлагает вернуть ширину.</summary>
+    public bool IsExpanded
+    {
+        get;
+        set
+        {
+            field = value;
+            string tooltip = value ? "Вернуть ширину диалога" : "Развернуть диалог";
+            ((FontIcon)expandButton.Content).Glyph = value ? "" : "";
+            ToolTipService.SetToolTip(expandButton, tooltip);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(expandButton, tooltip);
+        }
+    }
+
     public AgentPane()
     {
         settings = store.Load();
@@ -90,9 +113,10 @@ public sealed partial class AgentPane : UserControl
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        // Заголовок: название, новый диалог и сворачивание панели.
+        // Заголовок: название, новый диалог, разворот диалога и сворачивание панели.
         Grid header = new() { Background = HeaderBackground, Padding = new Thickness(12, 6, 6, 6), ColumnSpacing = 2 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(new TextBlock { Text = "Агент", FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
@@ -102,7 +126,10 @@ public sealed partial class AgentPane : UserControl
         header.Children.Add(newChat);
         Button hide = IconButton("", "Свернуть панель агента");
         hide.Click += (_, _) => HideRequested?.Invoke(this, EventArgs.Empty);
-        Grid.SetColumn(hide, 2);
+        expandButton.Click += (_, _) => ExpandRequested?.Invoke(this, EventArgs.Empty);
+        Grid.SetColumn(expandButton, 2);
+        header.Children.Add(expandButton);
+        Grid.SetColumn(hide, 3);
         header.Children.Add(hide);
         root.Children.Add(header);
 
@@ -602,13 +629,13 @@ public sealed partial class AgentPane : UserControl
             };
         }
 
-        public StackPanel Root { get; } = new() { Spacing = 6 };
+        public StackPanel Root { get; } = new() { Spacing = 8 };
 
         public void AppendText(string piece)
         {
             if (segment is null)
             {
-                segment = new StackPanel { Spacing = 6 };
+                segment = new StackPanel { Spacing = 10 };
                 Root.Children.Add(segment);
             }
 
