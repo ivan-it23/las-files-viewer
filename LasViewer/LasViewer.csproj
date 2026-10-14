@@ -29,7 +29,7 @@
          в 0.4.3–0.4.4 они остались 0.4.2, и программа считала себя старой.
          Build-Installer.ps1 сверяет с Version __version__ движка и версию
          опубликованного LasViewer.dll. -->
-    <Version>0.4.4</Version>
+    <Version>0.4.5</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PublishReadyToRun>False</PublishReadyToRun>
     <PublishTrimmed>False</PublishTrimmed>
