@@ -26,7 +26,7 @@
     <Copyright>Copyright © 2026 ООО НПФ &quot;АМК ГОРИЗОНТ&quot;</Copyright>
     <!-- Единственный источник номера версии. Build-Installer.ps1 сверяет с ним
          __version__ движка (engine/lasviewer_engine/__init__.py). -->
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
     <AssemblyVersion>0.4.2.0</AssemblyVersion>
     <FileVersion>0.4.2.0</FileVersion>
     <InformationalVersion>0.4.2</InformationalVersion>

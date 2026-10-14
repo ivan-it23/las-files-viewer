@@ -779,6 +779,51 @@ await CheckAsync("агент: лимит шагов — после него ин
     Equal(choices[^1], "none");
 });
 
+await CheckAsync("агент: пустой шаг модели и обрыв по лимиту длины — повтор с подсказкой", async () =>
+{
+    string LastUser(string body) =>
+        System.Text.Json.Nodes.JsonNode.Parse(body)!["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>();
+
+    // Пустой ответ (так Gemini закончил шаг после трёх скриптов) — повтор с просьбой ответить.
+    int calls = 0;
+    using FakeProxy empty = new((_, body) => ++calls == 1
+        ? FakeProxy.Sse("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "data: [DONE]")
+        : LastUser(body).Contains("пустым")
+            ? FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"Ответ\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]")
+            : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"нет подсказки\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
+    using LlmProxyClient emptyClient = new("amk-horizon.ru", empty);
+    RecordingObserver observer = new();
+    AgentSession session = new();
+    Equal(await session.AskAsync("?", string.Empty, emptyClient, null, new FakeTools(), observer, CancellationToken.None), "Ответ");
+    True(observer.Events.Any(e => e.StartsWith("notice ", StringComparison.Ordinal)), "нет сообщения о повторе");
+    // Подсказка о пустом ответе — только в запросе, в истории её нет.
+    Same(session.History.Select(m => m.Role), ["user", "assistant"]);
+
+    // Вызов инструмента оборвался по лимиту длины — не выполняется, модель просят писать короче.
+    int lengthCalls = 0;
+    using FakeProxy truncated = new((_, body) => ++lengthCalls == 1
+        ? FakeProxy.Sse(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"run_python\",\"arguments\":\"{\\\"code\\\": \\\"print(\"}}]},\"finish_reason\":\"length\"}]}",
+            "data: [DONE]")
+        : FakeProxy.Sse("data: {\"choices\":[{\"delta\":{\"content\":\"" + (LastUser(body).Contains("лимит длины") ? "Короче" : "без подсказки") + "\"},\"finish_reason\":\"stop\"}]}", "data: [DONE]"));
+    using LlmProxyClient truncatedClient = new("amk-horizon.ru", truncated);
+    FakeTools tools = new();
+    Equal(await new AgentSession().AskAsync("?", string.Empty, truncatedClient, null, tools, new RecordingObserver(), CancellationToken.None), "Короче");
+    Equal(tools.Calls.Count, 0);
+
+    // Модель упорно молчит — после повторов понятное сообщение, а не бесконечный цикл.
+    int silentCalls = 0;
+    using FakeProxy silent = new((_, _) =>
+    {
+        silentCalls++;
+        return FakeProxy.Sse("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "data: [DONE]");
+    });
+    using LlmProxyClient silentClient = new("amk-horizon.ru", silent);
+    string answer = await new AgentSession().AskAsync("?", string.Empty, silentClient, null, new FakeTools(), new RecordingObserver(), CancellationToken.None);
+    True(answer.StartsWith("Модель не дала ответа", StringComparison.Ordinal), answer);
+    Equal(silentCalls, AgentSession.MaxEmptyRetries + 1);
+});
+
 await CheckAsync("агент: методические материалы — к каждому вопросу в системном сообщении", async () =>
 {
     List<string> systems = [];

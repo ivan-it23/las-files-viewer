@@ -62,6 +62,14 @@ internal sealed class UpdateFlow(
 
             string remoteVersion = AppInfo.Format(update.RemoteVersion);
             string? copyMismatch = AutoUpdateService.DescribeCopyMismatch();
+            if (silent && copyMismatch is not null)
+            {
+                // Запущена не установленная копия — сборка из Visual Studio или
+                // отдельная папка. Обновление её не заменит, а вопрос при каждом
+                // запуске мешает разработке. Кнопка «Проверить обновления» спросит.
+                AppLog.Write($"Проверка обновлений: доступна {remoteVersion}, но запущена не установленная копия — без вопроса.");
+                return;
+            }
             string prompt = $"Доступна версия {remoteVersion}.\nТекущая версия: {AppInfo.Format(update.CurrentVersion)}.";
             prompt += copyMismatch is null
                 ? "\n\nСкачать и установить обновление?"

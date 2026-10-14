@@ -1,13 +1,14 @@
 ﻿# Проверка «Просмотрщика LAS» в окне: запуск, нажатия через UI Automation,
 # снимок только окна программы, вопрос агенту. Описание — SKILL.md рядом.
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('start', 'click', 'shot', 'ask', 'read', 'stop')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('start', 'click', 'shot', 'ask', 'approve', 'read', 'stop')][string]$Action,
     [Parameter(Mandatory = $true)][string]$Work,
     [string]$Build,
     [string[]]$Files = @(),
     [string]$Name,
     [string]$Out = 'shot',
-    [string]$Question
+    [string]$Question,
+    [int]$Seconds = 180
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +78,30 @@ switch ($Action) {
         $box.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Question)
         $send = Find-ByName $window 'Отправить или остановить'
         $send.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    }
+    'approve' {
+        # Ждёт окна «Запустить скрипт?», ставит «без вопроса до конца диалога» и
+        # нажимает «Запустить». Дальше скрипты этого диалога идут без вопроса.
+        $deadline = (Get-Date).AddSeconds($Seconds)
+        while ((Get-Date) -lt $deadline) {
+            $window = Get-AppWindow
+            $condition = New-Object System.Windows.Automation.PropertyCondition($auto::NameProperty, 'Запустить')
+            $run = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+            if ($null -ne $run) {
+                $trustCondition = New-Object System.Windows.Automation.PropertyCondition(
+                    $auto::NameProperty, 'Запускать скрипты без вопроса до конца этого диалога с агентом')
+                $trust = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $trustCondition)
+                if ($null -ne $trust) {
+                    $toggle = $trust.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                    if ($toggle.Current.ToggleState -ne 'On') { $toggle.Toggle() }
+                }
+                $run.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                'Скрипт разрешён'
+                return
+            }
+            Start-Sleep -Seconds 2
+        }
+        'Окно подтверждения не появилось'
     }
     'read' {
         $condition = New-Object System.Windows.Automation.PropertyCondition(

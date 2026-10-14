@@ -43,6 +43,8 @@ powershell -ExecutionPolicy Bypass -File ui.ps1 -Action stop -Work <scratchpad>
 - `shot` — **только окно программы** (`PrintWindow`), PNG в scratchpad.
 - `ask` — вписывает вопрос в поле агента и нажимает «Отправить». Ответ
   модели — 30–120 с; ждать перед `read`.
+- `approve -Seconds 180` — ждёт окна подтверждения скрипта агента, ставит
+  «без вопроса до конца диалога» и нажимает «Запустить».
 - `read` — все тексты окна в `answer.txt` (UTF-8): вызовы инструментов
   («✓ vikiz_layers»), ответ, расход.
 

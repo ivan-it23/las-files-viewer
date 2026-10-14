@@ -32,6 +32,9 @@ public sealed class LlmProxyClient : IDisposable
     /// Адрес файла посредника целиком, например
     /// «https://amk-horizon.ru/las-viewer/LlmController.php». Без схемы — https.
     /// </summary>
+    /// <summary>Наибольшая длина ответа модели в токенах (у посредника — MAX_OUTPUT_TOKENS = 8000).</summary>
+    public const int MaxOutputTokens = 8000;
+
     public static string BuildEndpoint(string serverUrl)
     {
         string value = (serverUrl ?? string.Empty).Trim();
@@ -85,7 +88,10 @@ public sealed class LlmProxyClient : IDisposable
         }
 
         body["temperature"] = 0.2;
-        body["max_tokens"] = 4000;
+        // Длинный скрипт (отчёт Word с графиками) и «размышления» моделей вроде
+        // Gemini не умещались в 4000 токенов: ответ обрывался пустым. Посредник
+        // ограничивает это число своим MAX_OUTPUT_TOKENS.
+        body["max_tokens"] = MaxOutputTokens;
 
         using HttpRequestMessage request = new(HttpMethod.Post, endpoint + "?a=chat")
         {

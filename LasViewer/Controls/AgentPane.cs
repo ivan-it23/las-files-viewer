@@ -839,6 +839,9 @@ public sealed partial class AgentPane : UserControl
 
         public void StepFinished(ChatUsage? usage) => pane.Post(pane.UpdateFooter);
 
+        public void StepDiagnostics(string? finishReason, int toolCalls, int textLength) =>
+            AppLog.Write($"Агент: шаг модели — завершение {finishReason ?? "нет"}, вызовов {toolCalls}, текст {textLength} симв.");
+
         public void Notice(string text) => pane.Post(() => turn.Notice(text));
     }
 

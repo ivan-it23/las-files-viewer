@@ -35,6 +35,11 @@ public interface IAgentObserver
 
     /// <summary>Служебное сообщение для пользователя: например, повтор запроса после обрыва связи.</summary>
     void Notice(string text);
+
+    /// <summary>Чем закончился шаг модели — для журнала: причина завершения, число вызовов, длина текста.</summary>
+    void StepDiagnostics(string? finishReason, int toolCalls, int textLength)
+    {
+    }
 }
 
 /// <summary>
@@ -59,6 +64,18 @@ public sealed class AgentSession
 
     /// <summary>Пауза перед повтором при перегрузке провайдера; растёт с каждым повтором. Изменяется проверками.</summary>
     public static TimeSpan BusyRetryDelay { get; set; } = TimeSpan.FromSeconds(4);
+
+    /// <summary>Сколько раз подряд повторяется шаг, на котором модель вернула пустой ответ.</summary>
+    public const int MaxEmptyRetries = 2;
+
+    private const string EmptyNote =
+        "Ваш предыдущий ответ пришёл пустым. Ответьте пользователю по уже полученным результатам инструментов "
+        + "или вызовите нужный инструмент.";
+
+    private const string LengthNote =
+        "Ваш предыдущий ответ оборвался: превышен лимит длины ответа. Пишите короче. Если нужен большой скрипт — "
+        + "разбейте работу на несколько запусков (например, отдельно расчёт и отдельно отчёт Word) и не повторяйте "
+        + "в коде уже посчитанное.";
 
     private const string ContinueNote =
         "Ответ оборвался из-за сбоя связи. Продолжите ровно с того места, где он прервался, "
@@ -132,6 +149,8 @@ public sealed class AgentSession
     {
         JsonArray toolList = await tools.GetToolsAsync(cancellationToken).ConfigureAwait(false);
         string system = AgentPrompt.Build(context, knowledge);
+        int emptyRetries = 0;
+        string? retryNote = null;
 
         for (int round = 0; ; round++)
         {
@@ -146,14 +165,40 @@ public sealed class AgentSession
                 request.Add(ChatMessage.User(FinalRoundNote));
             }
 
+            if (retryNote is not null)
+            {
+                request.Add(ChatMessage.User(retryNote));
+                retryNote = null;
+            }
+
             ChatCompletion completion = await CompleteStepAsync(
                 client, model, request, toolList, allowTools, observer, cancellationToken).ConfigureAwait(false);
+            observer.StepDiagnostics(completion.FinishReason, completion.ToolCalls.Count, completion.Content.Length);
 
+            // Пустой шаг (ни текста, ни вызова) или вызов, оборванный по лимиту
+            // длины (аргументы неполные), — не ответ: шаг повторяется с подсказкой
+            // и в лимит шагов не засчитывается.
+            bool truncated = completion.FinishReason == "length";
+            bool empty = completion.Content.Trim().Length == 0 && (completion.ToolCalls.Count == 0 || !allowTools);
+            if ((empty || (truncated && completion.ToolCalls.Count > 0 && allowTools)) && emptyRetries < MaxEmptyRetries)
+            {
+                emptyRetries++;
+                retryNote = truncated ? LengthNote : EmptyNote;
+                observer.Notice(truncated
+                    ? "Ответ модели не уместился в лимит длины — прошу ответить короче…"
+                    : "Модель вернула пустой ответ — повторяю запрос…");
+                round--;
+                continue;
+            }
+
+            emptyRetries = 0;
             if (completion.ToolCalls.Count == 0 || !allowTools)
             {
-                string answer = completion.Content.Length > 0
+                string answer = completion.Content.Trim().Length > 0
                     ? completion.Content
-                    : "Модель не дала ответа. Попробуйте переформулировать вопрос.";
+                    : truncated
+                        ? "Ответ модели не уместился в лимит длины. Попросите ответить короче или разбейте задачу на части."
+                        : "Модель не дала ответа. Попробуйте переформулировать вопрос или выбрать другую модель.";
                 history.Add(ChatMessage.Assistant(answer, null));
                 return answer;
             }
