@@ -329,6 +329,83 @@ Check("трек сравнения: кривая другого файла ря�
     Equal(template.Tracks.Count, 3);
 });
 
+Check("буфер планшетов: несколько кривых и треков, вставка на другой планшет", () =>
+{
+    // Планшет ЭМК (свой файл «emk»): трек RO1 + RO2 с заливкой и трек с кривой РК.
+    TrackDefinition emkTrack = new()
+    {
+        Scale = TrackScale.Logarithmic(1, 1000),
+        Curves = [new CurveStyle { Mnemonic = "RO1", Color = CurvePalette.ForPosition(0) }, new CurveStyle { Mnemonic = "RO2", Color = CurvePalette.ForPosition(1), Scale = TrackScale.Logarithmic(0.1, 100) }],
+        Fills = [new FillDefinition { Kind = FillKind.BetweenCurves, Curve = "RO1", OtherCurve = "RO2" }]
+    };
+
+    TabletClipboard clipboard = new();
+    int changes = 0;
+    clipboard.Changed += (_, _) => changes++;
+    clipboard.Add(new CopiedCurve(TemplateEditing.CopyCurve(emkTrack.Curves[0], emkTrack, "emk"), "51_ЭМК.las"));
+    clipboard.Add(new CopiedCurve(TemplateEditing.CopyCurve(emkTrack.Curves[1], emkTrack, "emk"), "51_ЭМК.las"));
+    clipboard.Add(new CopiedTrack(TemplateEditing.CopyTrack(emkTrack, "emk"), "51_ЭМК.las"));
+    // Повторное копирование той же кривой не плодит записи — она поднимается наверх.
+    clipboard.Add(new CopiedCurve(TemplateEditing.CopyCurve(emkTrack.Curves[0], emkTrack, "emk"), "51_ЭМК.las"));
+    Equal(clipboard.Count, 3);
+    Equal(changes, 4);
+    Equal(clipboard.Entries[0].Title, "RO1 · 51_ЭМК.las");
+    Equal(clipboard.Entries[1].Title, "Трек: RO1, RO2 · 51_ЭМК.las");
+
+    // В буфере ссылки явные, шкала — та, с которой кривая была нарисована.
+    CopiedCurve ro1 = clipboard.Curves.First(curve => curve.Curve.Mnemonic == "RO1");
+    Equal(ro1.Curve.Source, "emk");
+    Equal(ro1.Curve.Scale, TrackScale.Logarithmic(1, 1000));
+    True(emkTrack.Curves[0].Source is null && emkTrack.Curves[0].Scale is null, "копирование не меняет исходный трек");
+    Same(clipboard.Tracks.Single().Files, ["emk"]);
+
+    // Планшет РК (свой файл «rk»): трек GR. Наложить RO1 и RO2 на него.
+    TabletTemplate rk = new();
+    rk.Tracks.Add(new TrackDefinition { Scale = TrackScale.Linear(0, 30), Curves = [new CurveStyle { Mnemonic = "GR", Color = CurvePalette.ForPosition(0) }] });
+    // «Все кривые» вставляются в порядке копирования: RO2, затем снова скопированная RO1.
+    foreach (CopiedCurve copied in clipboard.Curves.Reverse())
+    {
+        CurveStyle curve = copied.Curve.Clone();
+        Equal(TemplateEditing.OverlayCurve(rk, 0, curve), 0);
+    }
+
+    Equal(rk.Tracks.Count, 1);
+    Same(rk.Tracks[0].Curves.Select(curve => curve.Mnemonic), ["GR", "RO2", "RO1"]);
+    Equal(rk.Tracks[0].Curves[2].Scale, TrackScale.Logarithmic(1, 1000));
+    True(rk.Tracks[0].Curves.Select(curve => curve.Color).Distinct().Count() == 3, "занятый цвет заменён свободным");
+    Equal(TemplateEditing.OverlayCurve(rk, 0, ro1.Curve.Clone()), -1);
+
+    // Кривая на новый трек: её шкала — шкала трека.
+    Equal(TemplateEditing.CurveOnNewTrack(rk, 1, ro1.Curve.Clone()), 1);
+    Equal(rk.Tracks[1].Scale, TrackScale.Logarithmic(1, 1000));
+    True(rk.Tracks[1].Curves[0].Scale is null, "на новом треке кривая идёт по шкале трека");
+
+    // Трек обратно на планшет ЭМК: ссылки на «emk» снова свои, заливка цела.
+    TabletTemplate emk = new();
+    Equal(TemplateEditing.PasteTrack(emk, 0, clipboard.Tracks.Single().Track, "emk"), 0);
+    True(emk.Tracks[0].Curves.All(curve => curve.Source is null) && emk.Tracks[0].Fills[0].Source is null, "свой файл — без ссылки");
+    // На планшет РК — ссылки на «emk» остаются.
+    Equal(TemplateEditing.PasteTrack(rk, 0, clipboard.Tracks.Single().Track, "rk"), 0);
+    True(rk.Tracks[0].Curves.All(curve => curve.Source == "emk"), "чужой файл — со ссылкой");
+    True(clipboard.Tracks.Single().Track.Curves.All(curve => curve.Source == "emk"), "вставка не меняет буфер");
+
+    // Закрыт файл: его кривые уходят из буфера, треки без кривых — тоже.
+    clipboard.Add(new CopiedCurve(new CurveStyle { Mnemonic = "GR", Source = "rk", Scale = TrackScale.Linear(0, 30) }, "51_РК.las"));
+    clipboard.RemoveFile("emk");
+    Same(clipboard.Entries.Select(entry => entry.Title), ["GR · 51_РК.las"]);
+    clipboard.Clear();
+    Equal(clipboard.Count, 0);
+
+    // Не больше Capacity элементов, новые первыми.
+    for (int index = 0; index < TabletClipboard.Capacity + 5; index++)
+    {
+        clipboard.Add(new CopiedCurve(new CurveStyle { Mnemonic = "C" + index, Source = "rk" }, string.Empty));
+    }
+
+    Equal(clipboard.Count, TabletClipboard.Capacity);
+    Equal(clipboard.Entries[0].Title, "C" + (TabletClipboard.Capacity + 4));
+});
+
 Check("ссылки на файлы: проект хранит номера, библиотека шаблонов — только свои кривые", () =>
 {
     TabletTemplate template = new() { Name = "ЭМК" };

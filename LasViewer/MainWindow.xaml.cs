@@ -364,6 +364,7 @@ public sealed partial class MainWindow : Window
     {
         int position = project.Documents.ToList().IndexOf(closing);
         Panels.Remove(closing);
+        clipboard.RemoveFile(closing.Key);
         await project.CloseAsync(closing);
         AfterDocumentClosed();
 
@@ -710,6 +711,15 @@ public sealed partial class MainWindow : Window
 
         OpenedDocument document = item.Document;
         MenuFlyout menu = new();
+        if (item.Curve is { } curve)
+        {
+            MenuFlyoutItem copy = new() { Text = $"Копировать кривую {curve.Mnemonic}" };
+            ToolTipService.SetToolTip(copy, "В буфер планшетов: вставить на трек любого планшета — меню трека «Вставить из буфера»");
+            copy.Click += (_, _) => CopyCurveFromTree(document, curve.Mnemonic);
+            menu.Items.Add(copy);
+            menu.Items.Add(new MenuFlyoutSeparator());
+        }
+
         MenuFlyoutItem show = new() { Text = "Показать на планшете" };
         show.Click += (_, _) => Activate(document);
         menu.Items.Add(show);
@@ -929,12 +939,12 @@ public sealed partial class MainWindow : Window
     // Движок, обновления, справка
     // ------------------------------------------------------------------
 
-    private async void RestartEngineMenuItem_Click(object sender, RoutedEventArgs e)
+    private async void RestartEngineButton_Click(object sender, RoutedEventArgs e)
     {
         await engine.StartAsync(lifetime.Token);
     }
 
-    private void OpenLogsMenuItem_Click(object sender, RoutedEventArgs e)
+    private void OpenLogsButton_Click(object sender, RoutedEventArgs e)
     {
         Directory.CreateDirectory(AppInfo.LogDirectory);
         Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { AppInfo.LogDirectory } });
@@ -951,7 +961,7 @@ public sealed partial class MainWindow : Window
             "Движок не работает",
             (engine.LastError ?? "Причина не известна.")
             + Environment.NewLine + Environment.NewLine
-            + "Попробуйте «Движок → Перезапустить движок». Подробности — в журнале: "
+            + "Нажмите «Перезапустить» в строке состояния. Подробности — в журнале логов: "
             + AppInfo.LogDirectory);
     }
 
@@ -960,33 +970,13 @@ public sealed partial class MainWindow : Window
         Close();
     }
 
+    /// <summary>
+    /// Состояние движка видно пользователю только при сбое — с причиной и
+    /// перезапуском. Запуск и готовность пишутся в журнал (EngineHost).
+    /// </summary>
     private void ShowEngineState(EngineStateChangedEventArgs change)
     {
-        EngineIndicator.Fill = new SolidColorBrush(change.State switch
-        {
-            EngineState.Ready => Colors.ForestGreen,
-            EngineState.Failed => Colors.Firebrick,
-            EngineState.Starting => Colors.Goldenrod,
-            _ => Colors.Gray
-        });
-
-        EngineStatusText.Text = change.State == EngineState.Ready && engine.Info is { } info
-            ? $"Движок готов · Python {info.Python.Version} ({(info.Python.Embedded ? "встроенный" : "системный")})"
-            : $"Движок: {DescribeState(change.State)}";
-        EngineDetailsButton.Visibility = change.State == EngineState.Failed ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private static string DescribeState(EngineState state)
-    {
-        return state switch
-        {
-            EngineState.NotStarted => "не запущен",
-            EngineState.Starting => "запуск…",
-            EngineState.Ready => "готов",
-            EngineState.Failed => "ошибка",
-            EngineState.Stopped => "остановлен",
-            _ => state.ToString()
-        };
+        EngineProblemPanel.Visibility = change.State == EngineState.Failed ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void SetStatus(string text)

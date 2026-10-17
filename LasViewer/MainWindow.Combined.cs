@@ -53,6 +53,29 @@ public sealed partial class MainWindow : ITabletHost
 
     async Task ITabletHost.EditDepthShiftsAsync(CombinedTablet tablet) => await EditDepthShiftsAsync(tablet);
 
+    /// <summary>Буфер обмена планшетов: кривые и треки, скопированные для вставки на другие планшеты.</summary>
+    private readonly TabletClipboard clipboard = new();
+
+    TabletClipboard ITabletHost.Clipboard => clipboard;
+
+    /// <summary>
+    /// Кривая из дерева проекта в буфер — с видом и шкалой, как на планшете
+    /// файла, а если её там нет — со шкалой по данным.
+    /// </summary>
+    private void CopyCurveFromTree(OpenedDocument document, string mnemonic)
+    {
+        CurveStyle curve = document.Template.Tracks
+            .SelectMany(track => track.Curves
+                .Where(style => style.Source is null && style.Mnemonic == mnemonic)
+                .Select(style => TemplateEditing.CopyCurve(style, track, document.Key)))
+            .FirstOrDefault()
+            ?? new CurveStyle { Mnemonic = mnemonic, Source = document.Key, Scale = DefaultTemplateBuilder.SuggestScale(document.TabletData, mnemonic) };
+        clipboard.Add(new CopiedCurve(curve, document.Document.Name));
+        SetStatus($"Кривая {mnemonic} скопирована · в буфере {clipboard.Count}");
+    }
+
+    void ITabletHost.Notify(string text) => SetStatus(text);
+
     private async Task EditDepthShiftsAsync(CombinedTablet tablet)
     {
         if (await CombinedTabletDialogs.EditDepthShiftsAsync(dialogs, tablet))

@@ -57,6 +57,7 @@ public sealed partial class LogTablet
         depthHeader.ContextFlyout = DynamicMenu(menu =>
         {
             menu.Items.Add(Item("Вставить трек", () => InsertTrack(0)));
+            AddPasteMenu(menu, null);
             AddDepthShiftItem(menu);
         });
         headerBorders.Add(depthHeader);
@@ -184,7 +185,8 @@ public sealed partial class LogTablet
         };
         string file = series?.Source.Name ?? data.Find(style.Source)?.Name ?? string.Empty;
         ToolTipService.SetToolTip(row, (file.Length > 0 ? $"Файл {file}. " : string.Empty)
-            + "Двойной щелчок — свойства кривой; перетащите на другой трек или на соседний планшет");
+            + "Двойной щелчок — свойства кривой; перетащите на другой трек или на соседний планшет; "
+            + "правая кнопка — «Копировать кривую» для вставки на любой планшет");
         row.ContextFlyout = DynamicMenu(menu => PopulateCurveMenu(menu, trackIndex, style));
         row.DoubleTapped += async (_, e) =>
         {
@@ -325,7 +327,7 @@ public sealed partial class LogTablet
             data = Host.SourcesFor(content);
         }
 
-        if (template is null || data!.Series(source, drag.Mnemonic) is null)
+        if (template is null || !HasCurve(source, drag.Mnemonic))
         {
             return;
         }
@@ -346,7 +348,9 @@ public sealed partial class LogTablet
     }
 
     private TrackScale SuggestScale(string? source, string mnemonic) =>
-        data!.Find(source) is { } file ? DefaultTemplateBuilder.SuggestScale(file.Data, mnemonic) : TrackScale.Linear(0, 100);
+        (data!.Find(source)?.Data ?? (source is null ? null : Host?.FindDocument(source)?.TabletData)) is { } file
+            ? DefaultTemplateBuilder.SuggestScale(file, mnemonic)
+            : TrackScale.Linear(0, 100);
 
     private static void SetBackground(FrameworkElement element, Brush? brush)
     {
@@ -412,6 +416,11 @@ public sealed partial class LogTablet
     {
         TrackDefinition track = template!.Tracks[trackIndex];
         menu.Items.Add(Item($"Свойства трека {trackIndex + 1}…", async () => await EditTrackAsync(trackIndex)));
+        MenuFlyoutItem copyTrack = Item($"Копировать трек {trackIndex + 1}", () => CopyTrack(trackIndex));
+        copyTrack.IsEnabled = track.Curves.Count > 0 && Host is not null;
+        menu.Items.Add(copyTrack);
+        AddPasteMenu(menu, trackIndex);
+        menu.Items.Add(new MenuFlyoutSeparator());
 
         // Кривые файлов планшета; если файлов несколько — по подменю на файл.
         MenuFlyoutSubItem add = new() { Text = "Добавить кривую" };
@@ -488,6 +497,9 @@ public sealed partial class LogTablet
     {
         string mnemonic = style.Mnemonic;
         menu.Items.Add(Item($"Свойства кривой {mnemonic}…", async () => await EditCurveAsync(trackIndex, style)));
+        MenuFlyoutItem copyCurve = Item($"Копировать кривую {mnemonic}", () => CopyCurve(trackIndex, style));
+        copyCurve.IsEnabled = Host is not null;
+        menu.Items.Add(copyCurve);
 
         MenuFlyoutSubItem move = new() { Text = "Перенести на трек" };
         for (int index = 0; index < template!.Tracks.Count; index++)
@@ -699,6 +711,198 @@ public sealed partial class LogTablet
 
         AfterEdit();
     }
+
+    // ------------------------------------------------------------------
+    // Буфер обмена: копирование и вставка кривых и треков
+    // ------------------------------------------------------------------
+
+    private void CopyCurve(int trackIndex, CurveStyle style)
+    {
+        if (Host is null)
+        {
+            return;
+        }
+
+        CurveStyle copy = TemplateEditing.CopyCurve(style, template!.Tracks[trackIndex], data!.Own?.Key);
+        Host.Clipboard.Add(new CopiedCurve(copy, data.Find(style.Source)?.Name ?? string.Empty));
+        Host.Notify($"Кривая {style.Mnemonic} скопирована · в буфере {Host.Clipboard.Count}");
+    }
+
+    private void CopyTrack(int trackIndex)
+    {
+        if (Host is null)
+        {
+            return;
+        }
+
+        TrackDefinition track = template!.Tracks[trackIndex];
+        string files = string.Join(", ", track.Curves.Select(curve => data!.Find(curve.Source)?.Name).OfType<string>().Distinct());
+        Host.Clipboard.Add(new CopiedTrack(TemplateEditing.CopyTrack(track, data!.Own?.Key), files));
+        Host.Notify($"Трек {trackIndex + 1} скопирован · в буфере {Host.Clipboard.Count}");
+    }
+
+    /// <summary>
+    /// Подменю «Вставить из буфера». У трека кривая накладывается на него или
+    /// ложится на новый трек справа, трек вставляется справа или слева; у
+    /// шапки глубины (<paramref name="trackIndex"/> = <c>null</c>) всё
+    /// вставляется новыми треками в начало.
+    /// </summary>
+    private void AddPasteMenu(MenuFlyout menu, int? trackIndex)
+    {
+        if (Host is null)
+        {
+            return;
+        }
+
+        TabletClipboard clipboard = Host.Clipboard;
+        MenuFlyoutSubItem paste = new() { Text = clipboard.Count > 0 ? $"Вставить из буфера ({clipboard.Count})" : "Вставить из буфера" };
+        menu.Items.Add(paste);
+        if (clipboard.Count == 0)
+        {
+            paste.Items.Add(new MenuFlyoutItem { Text = "Буфер пуст: скопируйте кривую или трек из их меню", IsEnabled = false });
+            return;
+        }
+
+        int newPosition = trackIndex is { } current ? current + 1 : 0;
+        string newTrackText = trackIndex is null ? "На новый трек" : "На новый трек справа";
+        foreach (ClipboardEntry entry in clipboard.Entries)
+        {
+            MenuFlyoutSubItem item = new() { Text = entry.Title };
+            switch (entry)
+            {
+                case CopiedCurve curve:
+                    if (trackIndex is { } overlay)
+                    {
+                        item.Items.Add(Item($"Наложить на трек {overlay + 1}", async () => await PasteCurvesAsync([curve], overlay, newTrack: false)));
+                    }
+
+                    item.Items.Add(Item(newTrackText, async () => await PasteCurvesAsync([curve], newPosition, newTrack: true)));
+                    break;
+                case CopiedTrack track:
+                    if (trackIndex is { } beside)
+                    {
+                        item.Items.Add(Item("Вставить справа", async () => await PasteTrackAsync(track, beside + 1)));
+                        item.Items.Add(Item("Вставить слева", async () => await PasteTrackAsync(track, beside)));
+                    }
+                    else
+                    {
+                        item.Items.Add(Item("Вставить в начало", async () => await PasteTrackAsync(track, 0)));
+                    }
+
+                    break;
+            }
+
+            paste.Items.Add(item);
+        }
+
+        // «Все кривые» — в порядке копирования (в буфере новые первыми).
+        List<CopiedCurve> curves = clipboard.Curves.Reverse().ToList();
+        if (curves.Count > 1)
+        {
+            paste.Items.Add(new MenuFlyoutSeparator());
+            if (trackIndex is { } all)
+            {
+                paste.Items.Add(Item($"Все кривые ({curves.Count}) — наложить на трек {all + 1}", async () => await PasteCurvesAsync(curves, all, newTrack: false)));
+            }
+
+            paste.Items.Add(Item($"Все кривые ({curves.Count}) — {newTrackText.ToLowerInvariant()}", async () => await PasteCurvesAsync(curves, newPosition, newTrack: true)));
+        }
+
+        paste.Items.Add(new MenuFlyoutSeparator());
+        paste.Items.Add(Item("Очистить буфер", () =>
+        {
+            clipboard.Clear();
+            Host.Notify("Буфер планшетов очищен");
+        }));
+    }
+
+    /// <summary>
+    /// Кривые из буфера: наложить на трек <paramref name="position"/> или
+    /// (<paramref name="newTrack"/>) положить на новый трек на этом месте —
+    /// первая задаёт его шкалу, остальные накладываются на неё.
+    /// </summary>
+    private async Task PasteCurvesAsync(IReadOnlyList<CopiedCurve> curves, int position, bool newTrack)
+    {
+        if (!await AcceptFilesAsync(curves.Select(curve => curve.Curve.Source!)) || template is null)
+        {
+            return;
+        }
+
+        int target = position;
+        int placed = 0;
+        foreach (CopiedCurve copied in curves)
+        {
+            CurveStyle curve = copied.Curve.Clone();
+            curve.Source = CurveSourceFor(copied.Curve.Source!);
+            if (newTrack && placed == 0)
+            {
+                target = TemplateEditing.CurveOnNewTrack(template, position, curve);
+                placed++;
+            }
+            else if (TemplateEditing.OverlayCurve(template, target, curve) >= 0)
+            {
+                placed++;
+            }
+        }
+
+        if (placed == 0)
+        {
+            Host?.Notify(curves.Count == 1 ? $"Кривая {curves[0].Curve.Mnemonic} уже на треке {target + 1}" : $"Эти кривые уже на треке {target + 1}");
+            return;
+        }
+
+        AfterEdit();
+        Host?.Notify(placed == 1 ? $"Кривая вставлена на трек {target + 1}" : $"Вставлено кривых на трек {target + 1}: {placed}");
+    }
+
+    private async Task PasteTrackAsync(CopiedTrack copied, int position)
+    {
+        if (!await AcceptFilesAsync(copied.Files) || template is null)
+        {
+            return;
+        }
+
+        int placed = TemplateEditing.PasteTrack(template, position, copied.Track, data!.Own?.Key);
+        AfterEdit();
+        Host?.Notify($"Трек вставлен: трек {placed + 1}");
+    }
+
+    /// <summary>
+    /// Файлы кривых из буфера, которых ещё нет на планшете, проходят те же
+    /// проверки, что при перетаскивании: файл открыт, единица глубины та же,
+    /// при другой скважине — вопрос; совместному планшету файл добавляется.
+    /// </summary>
+    private async Task<bool> AcceptFilesAsync(IEnumerable<string> files)
+    {
+        foreach (string file in files.Distinct())
+        {
+            if (data!.IsOwn(file) || data.Find(file) is not null)
+            {
+                continue;
+            }
+
+            if (Host?.FindDocument(file) is not { } document || content is null)
+            {
+                Host?.Notify("Файл кривой из буфера уже закрыт");
+                return false;
+            }
+
+            if (!await Host.AcceptSourceAsync(content, document))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Есть ли кривая в файле. Файл, на который шаблон ещё не ссылается, в
+    /// <see cref="data"/> не входит — его кривые смотрятся в открытом файле.
+    /// </summary>
+    private bool HasCurve(string? source, string mnemonic) =>
+        data!.Series(source, mnemonic) is not null
+        || (source is not null && Host?.FindDocument(source)?.TabletData.Mnemonics.Contains(mnemonic) == true);
 
     // ------------------------------------------------------------------
     // Маркеры и интервалы

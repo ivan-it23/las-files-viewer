@@ -74,6 +74,106 @@ public static class TemplateEditing
     public static bool SameCurve(CurveStyle first, CurveStyle second) =>
         first.Mnemonic == second.Mnemonic && first.Source == second.Source;
 
+    // ------------------------------------------------------------------
+    // Буфер обмена: копирование и вставка кривых и треков
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Кривая для буфера обмена: копия с явной ссылкой на файл и со шкалой,
+    /// с которой она нарисована на треке, — чтобы на другом планшете она
+    /// выглядела так же.
+    /// </summary>
+    /// <param name="ownKey">Ключ файла планшета, с которого копируют (для «своих» кривых).</param>
+    public static CurveStyle CopyCurve(CurveStyle curve, TrackDefinition track, string? ownKey)
+    {
+        CurveStyle copy = curve.Clone();
+        copy.Source ??= ownKey;
+        copy.Scale = curve.EffectiveScale(track);
+        return copy;
+    }
+
+    /// <summary>Трек для буфера обмена: копия, где у всех кривых и заливок ссылка на файл явная.</summary>
+    public static TrackDefinition CopyTrack(TrackDefinition track, string? ownKey)
+    {
+        TrackDefinition copy = track.Clone();
+        copy.Curves.ForEach(curve => curve.Source ??= ownKey);
+        copy.Fills.ForEach(fill => fill.Source ??= ownKey);
+        return copy;
+    }
+
+    /// <summary>
+    /// Кладёт кривую из буфера поверх кривых трека — без трека сравнения.
+    /// На пустом треке её шкала становится шкалой трека; на занятом кривая
+    /// сохраняет свою шкалу (если она не совпадает со шкалой трека) и
+    /// получает свободный цвет, если её цвет на треке уже занят.
+    /// </summary>
+    /// <param name="curve">Копия из буфера; ссылка на файл — уже для этого планшета (<c>null</c> — свой файл).</param>
+    /// <returns>Номер трека или −1, если такая кривая на треке уже есть.</returns>
+    public static int OverlayCurve(TabletTemplate template, int trackIndex, CurveStyle curve)
+    {
+        if (trackIndex < 0 || trackIndex >= template.Tracks.Count)
+        {
+            return -1;
+        }
+
+        TrackDefinition track = template.Tracks[trackIndex];
+        if (track.Curves.Any(existing => SameCurve(existing, curve)))
+        {
+            return -1;
+        }
+
+        if (track.Curves.Count == 0)
+        {
+            track.Scale = curve.Scale ?? track.Scale;
+            curve.Scale = null;
+        }
+        else if (curve.Scale == track.Scale)
+        {
+            curve.Scale = null;
+        }
+
+        if (track.Curves.Any(existing => existing.Color == curve.Color))
+        {
+            curve.Color = FreeColor(track);
+        }
+
+        track.Curves.Add(curve);
+        return trackIndex;
+    }
+
+    /// <summary>Новый трек на месте <paramref name="position"/> с одной кривой из буфера (её шкала — шкала трека).</summary>
+    public static int CurveOnNewTrack(TabletTemplate template, int position, CurveStyle curve)
+    {
+        position = Math.Clamp(position, 0, template.Tracks.Count);
+        template.Tracks.Insert(position, new TrackDefinition { Scale = curve.Scale ?? TrackScale.Linear(0, 100) });
+        curve.Scale = null;
+        template.Tracks[position].Curves.Add(curve);
+        return position;
+    }
+
+    /// <summary>
+    /// Трек из буфера на месте <paramref name="position"/>. Ссылки на файл
+    /// <paramref name="ownKey"/> становятся «своими» (<c>null</c>), остальные
+    /// остаются явными.
+    /// </summary>
+    public static int PasteTrack(TabletTemplate template, int position, TrackDefinition copied, string? ownKey)
+    {
+        TrackDefinition track = copied.Clone();
+        foreach (CurveStyle curve in track.Curves.Where(curve => ownKey is not null && curve.Source == ownKey))
+        {
+            curve.Source = null;
+        }
+
+        foreach (FillDefinition fill in track.Fills.Where(fill => ownKey is not null && fill.Source == ownKey))
+        {
+            fill.Source = null;
+        }
+
+        position = Math.Clamp(position, 0, template.Tracks.Count);
+        template.Tracks.Insert(position, track);
+        return position;
+    }
+
     /// <summary>
     /// Копия шаблона, в которой ссылки на файлы заменены по <paramref name="map"/>.
     /// Кривые и заливки, для которых <paramref name="map"/> вернул <c>null</c>, убираются:

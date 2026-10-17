@@ -17,9 +17,11 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Меню и кнопка проверки обновлений в одной строке. -->
+        <!-- Меню, «Журнал логов» и «Проверить обновления» в одной строке: обе кнопки
+             действуют сразу, без выпадающего списка. -->
         <Grid Grid.Row="0">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
@@ -82,13 +84,18 @@
                 <MenuFlyoutItem Text="Совместный планшет…" Click="CombinedTabletMenuItem_Click" />
             </MenuBarItem>
             <MenuBarItem x:Name="TemplateMenu" Title="Шаблон" />
-            <MenuBarItem Title="Движок">
-                <MenuFlyoutItem Text="Перезапустить движок" Click="RestartEngineMenuItem_Click" />
-                <MenuFlyoutItem Text="Открыть папку журналов" Click="OpenLogsMenuItem_Click" />
-            </MenuBarItem>
         </MenuBar>
             <Button
                 Grid.Column="1"
+                Content="Журнал логов"
+                VerticalAlignment="Stretch"
+                Padding="12,0"
+                Background="Transparent"
+                BorderThickness="0"
+                ToolTipService.ToolTip="Открыть папку с журналами программы"
+                Click="OpenLogsButton_Click" />
+            <Button
+                Grid.Column="2"
                 Content="Проверить обновления"
                 VerticalAlignment="Stretch"
                 Padding="12,0"
@@ -298,32 +305,33 @@
             </Border>
         </Grid>
 
-        <!-- Строка состояния. -->
+        <!-- Строка состояния. Движок упоминается только при сбое: «готов» пользователю не нужно. -->
         <Grid Grid.Row="2" Background="{StaticResource PanelHeaderBackground}" Padding="10,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <Ellipse x:Name="EngineIndicator" Width="10" Height="10" VerticalAlignment="Center" />
-            <TextBlock
-                x:Name="EngineStatusText"
-                Grid.Column="1"
-                Margin="8,0,0,0"
-                VerticalAlignment="Center" />
-            <HyperlinkButton
-                x:Name="EngineDetailsButton"
-                Grid.Column="2"
-                Margin="8,0,0,0"
-                Padding="4,0"
-                VerticalAlignment="Center"
-                Content="Подробнее"
-                Visibility="Collapsed"
-                Click="EngineDetailsButton_Click" />
+            <StackPanel
+                x:Name="EngineProblemPanel"
+                Orientation="Horizontal"
+                Spacing="8"
+                Visibility="Collapsed">
+                <Ellipse Width="10" Height="10" VerticalAlignment="Center" Fill="Firebrick" />
+                <TextBlock VerticalAlignment="Center" Text="Движок не работает" />
+                <HyperlinkButton
+                    Padding="4,0"
+                    VerticalAlignment="Center"
+                    Content="Подробнее"
+                    Click="EngineDetailsButton_Click" />
+                <HyperlinkButton
+                    Padding="4,0"
+                    VerticalAlignment="Center"
+                    Content="Перезапустить"
+                    Click="RestartEngineButton_Click" />
+            </StackPanel>
             <TextBlock
                 x:Name="StatusText"
-                Grid.Column="3"
+                Grid.Column="1"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Center"
                 Foreground="{StaticResource PlaceholderForeground}" />

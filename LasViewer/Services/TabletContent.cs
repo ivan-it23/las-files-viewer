@@ -39,6 +39,12 @@ internal interface ITabletHost
 
     /// <summary>Сдвиги по глубине файлов совместного планшета — диалог.</summary>
     Task EditDepthShiftsAsync(CombinedTablet tablet);
+
+    /// <summary>Буфер обмена планшетов — общий для всех планшетов окна.</summary>
+    TabletClipboard Clipboard { get; }
+
+    /// <summary>Короткое сообщение в строке состояния.</summary>
+    void Notify(string text);
 }
 
 /// <summary>Файл совместного планшета.</summary>
