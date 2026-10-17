@@ -1,13 +1,16 @@
-"""Иконка «Просмотрщика LAS»: значок файла — белый лист с загнутым углом и
-синей полосой с подписью «.LAS», как значки типов файлов в Windows.
+"""Иконка «Просмотрщика LAS»: белый лист с загнутым углом и тёмно-синяя
+плашка с крупной подписью «.LAS» — больше на листе ничего нет.
+
+Строгий вариант прежней иконки: тонкий холодно-серый контур, прямоугольная
+плашка вровень с листом, шрифт Bahnschrift вместо Segoe UI Black.
 
 Пересобирает LasViewer/Assets/LasViewer.ico со всеми размерами Windows.
 Нужен Pillow (только разработчику, в программу не входит):
 
     python scripts/make_icon.py [--preview файл.png]
 
-Каждый размер рисуется отдельно: в 16–24 px полоса с подписью шире листа и
-занимает больше высоты, а контур тоньше — иначе подпись не читается.
+Каждый размер рисуется отдельно: в 16–24 px плашка шире листа и выше,
+а контур толще — иначе подпись не читается.
 """
 
 from __future__ import annotations
@@ -19,58 +22,62 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "LasViewer" / "Assets" / "LasViewer.ico"
-FONT = Path(r"C:\Windows\Fonts\seguibl.ttf")  # Segoe UI Black
+FONT = Path(r"C:\Windows\Fonts\bahnschrift.ttf")  # Bahnschrift — строгий «инженерный» шрифт Windows
 
-BLUE = (0x1A, 0x8F, 0xDA, 255)
+NAVY = (0x0F, 0x3B, 0x6E, 255)
 WHITE = (255, 255, 255, 255)
-PAGE_EDGE = (0x88, 0x87, 0x80, 255)
-FOLD = (0xD3, 0xD1, 0xC7, 255)
+PAGE_EDGE = (0x8C, 0x96, 0xA3, 255)
+FOLD = (0xE3, 0xE7, 0xEC, 255)
 SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
 SUPERSAMPLE = 8
 
-
 def render(size: int) -> Image.Image:
     big = size * SUPERSAMPLE
+    u = big / 256
     image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     small = size <= 24
 
     # Лист с загнутым правым верхним углом.
-    side = round(big * (0.12 if small else 0.10))
-    fold = round(big * (0.22 if small else 0.24))
-    left, top, right, bottom = side, round(big * 0.03), big - side, big - round(big * 0.03)
-    edge = max(SUPERSAMPLE, round(big * (0.03 if small else 0.02)))
+    side = (30 if small else 40) * u
+    left, top, right, bottom = side, 10 * u, big - side, 246 * u
+    fold = 46 * u
+    edge = max(SUPERSAMPLE, round((7 if small else 4) * u))
     draw.polygon([(left, top), (right - fold, top), (right, top + fold), (right, bottom), (left, bottom)],
                  fill=WHITE, outline=PAGE_EDGE, width=edge)
-    draw.polygon([(right - fold, top), (right - fold, top + fold), (right, top + fold)], fill=FOLD, outline=PAGE_EDGE, width=edge)
+    draw.polygon([(right - fold, top), (right - fold, top + fold), (right, top + fold)],
+                 fill=FOLD, outline=PAGE_EDGE, width=edge)
 
-    # Полоса с подписью выходит за края листа — как у значков типов файлов.
-    band = (0 if small else left - round(big * 0.06),
-            round(big * (0.44 if small else 0.50)),
-            big if small else right + round(big * 0.06),
-            round(big * (0.86 if small else 0.84)))
-    draw.rounded_rectangle(band, radius=round(big * 0.06), fill=BLUE)
-    draw_label(draw, band, (band[2] - band[0]) * (0.80 if small else 0.58))
+    # Плашка вровень с листом (в мелких размерах — во всю ширину) и подпись.
+    band = (0, 98 * u, big, 234 * u) if small else (left, 106 * u, right, 222 * u)
+    draw.rectangle(band, fill=NAVY)
+    draw_label(draw, band, (band[2] - band[0]) * (0.94 if small else 0.90))
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def draw_label(draw: ImageDraw.ImageDraw, box: tuple[float, float, float, float], width: float) -> None:
-    """«.LAS» по центру полосы. Точка — круг: точка шрифта в мелких размерах теряется."""
-    font_size = 400
-    font = ImageFont.truetype(str(FONT), font_size)
-    while draw.textbbox((0, 0), "LAS", font=font)[2] > width:
-        font_size -= max(1, font_size // 50)
+    """«.LAS» по центру плашки с лёгкой разрядкой. Точка — квадрат: точка шрифта в мелких размерах теряется."""
+    height = box[3] - box[1]
+    font_size = 600
+    while True:
         font = ImageFont.truetype(str(FONT), font_size)
+        font.set_variation_by_name("SemiBold")
+        letters = [draw.textbbox((0, 0), letter, font=font) for letter in "LAS"]
+        cap_height = letters[0][3] - letters[0][1]
+        gap = font_size * 0.05
+        dot = cap_height * 0.22
+        total = dot + gap * 1.6 + sum(box_[2] - box_[0] for box_ in letters) + gap * 2
+        if total <= width and cap_height <= height * 0.62:
+            break
+        font_size -= max(1, font_size // 40)
 
-    word = draw.textbbox((0, 0), "LAS", font=font)
-    cap_height = word[3] - word[1]
-    dot = cap_height * 0.31
-    gap = cap_height * 0.08
-    total = dot + gap + (word[2] - word[0])
     x = (box[0] + box[2] - total) / 2
     baseline = (box[1] + box[3] + cap_height) / 2
-    draw.ellipse((x, baseline - dot, x + dot, baseline), fill=WHITE)
-    draw.text((x + dot + gap - word[0], (box[1] + box[3] - cap_height) / 2 - word[1]), "LAS", font=font, fill=WHITE)
+    draw.rectangle((x, baseline - dot, x + dot, baseline), fill=WHITE)
+    x += dot + gap * 1.6
+    for letter, bbox in zip("LAS", letters):
+        draw.text((x - bbox[0], baseline - cap_height - bbox[1]), letter, font=font, fill=WHITE)
+        x += bbox[2] - bbox[0] + gap
 
 
 def main() -> None:
